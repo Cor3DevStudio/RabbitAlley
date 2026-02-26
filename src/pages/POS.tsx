@@ -1,0 +1,351 @@
+import { useEffect, useState } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { TableGrid } from "@/components/dashboard/TableGrid";
+import { useAuth } from "@/contexts/AuthContext";
+import { api } from "@/lib/api";
+import { areas, mapApiTable } from "@/types/pos";
+import type { Table } from "@/types/pos";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Plus, ArrowRightLeft } from "lucide-react";
+import { toast } from "sonner";
+
+export default function POS() {
+  const { hasPermission, user } = useAuth();
+  const canAddTable = hasPermission("manage_settings");
+  const canMergeTables = hasPermission("transfer_table_orders") || hasPermission("manage_settings");
+  const [tables, setTables] = useState<Table[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [addTableOpen, setAddTableOpen] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addArea, setAddArea] = useState<"Lounge" | "Club" | "LD">("Lounge");
+  const [editTableOpen, setEditTableOpen] = useState(false);
+  const [editingTable, setEditingTable] = useState<Table | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editArea, setEditArea] = useState<"Lounge" | "Club" | "LD">("Lounge");
+  const [saving, setSaving] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [sourceTableId, setSourceTableId] = useState("");
+  const [targetTableId, setTargetTableId] = useState("");
+  const [mergeReason, setMergeReason] = useState("");
+  const [merging, setMerging] = useState(false);
+
+  const loadTables = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const tablesRes = await api.dashboard.tables();
+      setTables(tablesRes.map(mapApiTable));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load tables");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTables();
+  }, []);
+
+  const handleAddTable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addName.trim()) {
+      toast.error("Table name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.dashboard.createTable({ name: addName.trim(), area: addArea });
+      setAddTableOpen(false);
+      setAddName("");
+      setAddArea("Lounge");
+      toast.success("Table added");
+      loadTables();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to add table");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openEditTable = (table: Table) => {
+    setEditingTable(table);
+    setEditName(table.name);
+    setEditArea(table.area);
+    setEditTableOpen(true);
+  };
+
+  const handleEditTable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTable || !editName.trim()) {
+      toast.error("Table name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.dashboard.updateTable(editingTable.id, { name: editName.trim(), area: editArea });
+      setEditTableOpen(false);
+      setEditingTable(null);
+      toast.success("Table updated");
+      loadTables();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to update table");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteTable = async (table: Table) => {
+    if (table.status !== "available") {
+      toast.error("Only available tables can be removed");
+      return;
+    }
+    if (!confirm(`Remove table "${table.name}"? This cannot be undone.`)) return;
+    try {
+      await api.dashboard.deleteTable(table.id);
+      toast.success("Table removed");
+      loadTables();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to remove table");
+    }
+  };
+
+  const openMergeDialog = () => {
+    setSourceTableId("");
+    setTargetTableId("");
+    setMergeReason("");
+    setMergeOpen(true);
+  };
+
+  const handleMergeTables = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sourceTableId || !targetTableId) {
+      toast.error("Select source and target tables");
+      return;
+    }
+    if (sourceTableId === targetTableId) {
+      toast.error("Source and target tables must be different");
+      return;
+    }
+    const source = tables.find((t) => t.id === sourceTableId);
+    const target = tables.find((t) => t.id === targetTableId);
+    if (!source?.currentOrderId || !target?.currentOrderId) {
+      toast.error("Both tables must have active orders");
+      return;
+    }
+
+    setMerging(true);
+    try {
+      await api.tables.merge({
+        sourceOrderId: source.currentOrderId,
+        targetOrderId: target.currentOrderId,
+        transferredBy: user?.id || "0",
+        reason: mergeReason.trim() || undefined,
+      });
+      toast.success(`Merged ${source.name} into ${target.name}`);
+      setMergeOpen(false);
+      loadTables();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to merge tables");
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  if (error) {
+    return (
+      <AppLayout>
+        <PageHeader title="Point of Sale" description="Select a table to start or view an order" />
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-destructive">
+          {error}
+        </div>
+      </AppLayout>
+    );
+  }
+
+  return (
+    <AppLayout>
+      <PageHeader
+        title="Point of Sale"
+        description="Select a table to start or view an order"
+      >
+        {canAddTable && (
+          <Button onClick={() => setAddTableOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Table
+          </Button>
+        )}
+        {canMergeTables && (
+          <Button variant="outline" onClick={openMergeDialog}>
+            <ArrowRightLeft className="w-4 h-4 mr-2" />
+            Merge Tables
+          </Button>
+        )}
+      </PageHeader>
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {["Lounge", "Club", "LD"].map((area) => (
+            <div key={area} className="space-y-3">
+              <div className="h-6 w-32 rounded bg-muted animate-pulse" />
+              <div className="grid grid-cols-2 gap-2">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="h-20 rounded-lg bg-muted animate-pulse" />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <TableGrid
+          tables={tables}
+          showTableActions={canAddTable}
+          onEditTable={canAddTable ? openEditTable : undefined}
+          onDeleteTable={canAddTable ? handleDeleteTable : undefined}
+        />
+      )}
+
+      <Dialog open={addTableOpen} onOpenChange={setAddTableOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Table</DialogTitle>
+            <p className="text-sm text-muted-foreground">Extend your floor with a new table. It will appear in the selected area.</p>
+          </DialogHeader>
+          <form onSubmit={handleAddTable} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="tableName">Table Name / ID</Label>
+              <Input
+                id="tableName"
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                placeholder="e.g. L7, C9, LD5"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Area</Label>
+              <Select value={addArea} onValueChange={(v) => setAddArea(v as "Lounge" | "Club" | "LD")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {areas.map((a) => (
+                    <SelectItem key={a} value={a}>{a}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setAddTableOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={saving}>{saving ? "Adding…" : "Add Table"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editTableOpen} onOpenChange={(open) => { setEditTableOpen(open); if (!open) setEditingTable(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Table</DialogTitle>
+            <p className="text-sm text-muted-foreground">Change table name or area. Table ID: {editingTable?.id}</p>
+          </DialogHeader>
+          <form onSubmit={handleEditTable} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="editTableName">Table Name</Label>
+              <Input
+                id="editTableName"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="e.g. L7, C9"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Area</Label>
+              <Select value={editArea} onValueChange={(v) => setEditArea(v as "Lounge" | "Club" | "LD")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {areas.map((a) => (
+                    <SelectItem key={a} value={a}>{a}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditTableOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={mergeOpen} onOpenChange={setMergeOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Merge Tables</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Move all items from source table order into target table order.
+            </p>
+          </DialogHeader>
+          <form onSubmit={handleMergeTables} className="space-y-4">
+            <div className="space-y-2">
+              <Label>Source table (from)</Label>
+              <Select value={sourceTableId} onValueChange={setSourceTableId}>
+                <SelectTrigger><SelectValue placeholder="Select occupied table" /></SelectTrigger>
+                <SelectContent>
+                  {tables
+                    .filter((t) => t.status === "occupied" && t.currentOrderId)
+                    .map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.area} - {t.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Target table (to)</Label>
+              <Select value={targetTableId} onValueChange={setTargetTableId}>
+                <SelectTrigger><SelectValue placeholder="Select occupied table" /></SelectTrigger>
+                <SelectContent>
+                  {tables
+                    .filter((t) => t.status === "occupied" && t.currentOrderId)
+                    .map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.area} - {t.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mergeReason">Reason (optional)</Label>
+              <Input
+                id="mergeReason"
+                value={mergeReason}
+                onChange={(e) => setMergeReason(e.target.value)}
+                placeholder="e.g. Customer requested one bill"
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setMergeOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={merging}>{merging ? "Merging…" : "Merge"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </AppLayout>
+  );
+}

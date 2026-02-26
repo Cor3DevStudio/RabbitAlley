@@ -1,0 +1,95 @@
+import { useEffect, useState } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { StatCard } from "@/components/dashboard/StatCard";
+import { TableGrid } from "@/components/dashboard/TableGrid";
+import { api } from "@/lib/api";
+import { ShoppingBag, DollarSign, LayoutGrid, Clock } from "lucide-react";
+import { mapApiTable } from "@/types/pos";
+import type { Table } from "@/types/pos";
+import { formatCurrency } from "@/lib/utils";
+
+export default function Dashboard() {
+  const [stats, setStats] = useState<{ todaysOrders: number; todaysSales: number; openTables: number; pendingOrders: number } | null>(null);
+  const [tables, setTables] = useState<Table[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [statsRes, tablesRes] = await Promise.all([api.dashboard.stats(), api.dashboard.tables()]);
+        if (!cancelled) {
+          setStats(statsRes);
+          setTables(tablesRes.map(mapApiTable));
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load dashboard");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (error) {
+    return (
+      <AppLayout>
+        <PageHeader title="Dashboard" description="Real-time overview of today's operations" />
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-destructive">
+          {error}
+        </div>
+      </AppLayout>
+    );
+  }
+
+  return (
+    <AppLayout>
+      <PageHeader
+        title="Dashboard"
+        description="Real-time overview of today's operations"
+      />
+
+      {loading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-24 rounded-lg bg-muted animate-pulse" />
+          ))}
+        </div>
+      ) : stats ? (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <StatCard
+              label="Today's Orders"
+              value={stats.todaysOrders}
+              icon={<ShoppingBag className="w-5 h-5" />}
+              trend={{ value: 12, isPositive: true }}
+            />
+            <StatCard
+              label="Today's Sales"
+              value={formatCurrency(stats.todaysSales)}
+              icon={<DollarSign className="w-5 h-5" />}
+              trend={{ value: 8, isPositive: true }}
+            />
+            <StatCard
+              label="Open Tables"
+              value={stats.openTables}
+              icon={<LayoutGrid className="w-5 h-5" />}
+            />
+            <StatCard
+              label="Pending Orders"
+              value={stats.pendingOrders}
+              icon={<Clock className="w-5 h-5" />}
+            />
+          </div>
+
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold mb-4">Table Overview</h2>
+          </div>
+          <TableGrid tables={tables} />
+        </>
+      ) : null}
+    </AppLayout>
+  );
+}
