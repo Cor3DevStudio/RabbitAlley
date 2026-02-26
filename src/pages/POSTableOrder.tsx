@@ -7,36 +7,41 @@ import { getPosSettings } from "@/lib/posSettings";
 import { mapApiTable, type Table, type Product } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Send, CreditCard, Eye, Printer, ChefHat, Wine, Banknote, Smartphone, Building2, Wallet, Tag, Percent, X, Gift, Plus, Lock, Receipt, User } from "lucide-react";
+import { ArrowLeft, Send, CreditCard, Eye, Printer, ChefHat, Wine, Banknote, Smartphone, Building2, Wallet, Tag, Percent, X, Gift, Plus, Lock, Receipt, User, Ban } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   VisuallyHidden,
 } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 type PaymentMethod = "cash" | "gcash" | "debit" | "credit" | "bank" | "charge";
-type SplitMethod = "cash" | "gcash" | "bank";
+type SplitMethod = "cash" | "gcash" | "bank" | "debit" | "credit" | "charge";
 
 /** Tab = one order. id=null means draft (not yet sent). */
 interface OrderTab {
   id: string | null;
   items: OrderItem[];
   sent: boolean;
+  voidedAt?: string | null;
+  voidedByName?: string | null;
 }
 
 export default function POSTableOrder() {
   const { tableId } = useParams<{ tableId: string }>();
   const navigate = useNavigate();
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, logout } = useAuth();
   const [table, setTable] = useState<Table | null>(null);
   const [tablesLoading, setTablesLoading] = useState(true);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("");
+  const [selectedSubCategory, setSelectedSubCategory] = useState<string>("");
   const [orderTabs, setOrderTabs] = useState<OrderTab[]>([{ id: null, items: [], sent: false }]);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const [sendToDeptOpen, setSendToDeptOpen] = useState(false);
@@ -69,6 +74,7 @@ export default function POSTableOrder() {
     { amount: "", method: "cash" },
     { amount: "", method: "gcash" },
   ]);
+  const [splitChargeNames, setSplitChargeNames] = useState<Record<number, string>>({});
   const [chargeCustomerName, setChargeCustomerName] = useState("");
   const [chargeAuthModalOpen, setChargeAuthModalOpen] = useState(false);
   const [chargeAuthCustomerName, setChargeAuthCustomerName] = useState("");
@@ -87,19 +93,36 @@ export default function POSTableOrder() {
   const [managerAuthLoading, setManagerAuthLoading] = useState(false);
   const [availableDiscounts, setAvailableDiscounts] = useState<Array<{ id: string; name: string; type: string; value: string; category?: string | null }>>([]);
   const [appliedDiscount, setAppliedDiscount] = useState<{ id: string; name: string; type: string; value: string } | null>(null);
+  const [voidModalOpen, setVoidModalOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidEmployeeId, setVoidEmployeeId] = useState("");
+  const [voidPassword, setVoidPassword] = useState("");
+  const [voidError, setVoidError] = useState<string | null>(null);
+  const [voiding, setVoiding] = useState(false);
+  const [itemVoidModalOpen, setItemVoidModalOpen] = useState(false);
+  const [pendingVoidItem, setPendingVoidItem] = useState<OrderItem | null>(null);
+  const [itemVoidEmployeeId, setItemVoidEmployeeId] = useState("");
+  const [itemVoidPassword, setItemVoidPassword] = useState("");
+  const [itemVoidError, setItemVoidError] = useState<string | null>(null);
+  const [itemVoiding, setItemVoiding] = useState(false);
 
   useEffect(() => {
-    if (!ladyModalOpen && selectedCategory !== "LD") return;
+    if (!ladyModalOpen && selectedCategory !== "Ladies Drink") return;
     api.staff.ldLadies().then(setLdLadies).catch(() => setLdLadies([]));
   }, [ladyModalOpen, selectedCategory]);
 
   useEffect(() => {
-    if (selectedCategory !== "LD" && selectedLdLadyForCategory) {
+    if (selectedCategory !== "Ladies Drink" && selectedLdLadyForCategory) {
       setSelectedLdLadyForCategory("");
     }
   }, [selectedCategory, selectedLdLadyForCategory]);
 
+  useEffect(() => {
+    setSelectedSubCategory("");
+  }, [selectedCategory]);
+
   // Load products from API (with area so prices match table: Lounge vs Club vs LD)
+  // When we have a table, wait for it so we pass area and price-by-area reflects correctly
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -115,6 +138,7 @@ export default function POSTableOrder() {
               name: p.name,
               description: p.description,
               category: p.category,
+              sub_category: (p as { sub_category?: string }).sub_category ?? "",
               department: p.department,
               price: p.price,
               cost: p.cost,
@@ -125,11 +149,11 @@ export default function POSTableOrder() {
           setProducts(mappedProducts);
 
           // Build category list from ALL products (active + inactive) so every category shows in POS
-          const isListOfLadiesCategory = (cat: string) => /list\s+of\s+ladies/i.test(cat);
+          const isListOfLadiesCategory = (cat: string) => /list\s+of\s+ladies/i.test(cat) || /ladies\s+drink/i.test(cat);
           const uniqueCategories = [...new Set(productList.map((p) => p.category).filter(Boolean))].sort();
           const hasLdProducts = productList.some((p) => p.department === "LD");
           const categoryList = hasLdProducts
-            ? ["LD", ...uniqueCategories.filter((cat) => cat !== "LD" && !isListOfLadiesCategory(cat))]
+            ? ["Ladies Drink", ...uniqueCategories.filter((cat) => cat !== "LD" && !isListOfLadiesCategory(cat))]
             : uniqueCategories.filter((cat) => !isListOfLadiesCategory(cat));
           setCategories(categoryList);
           if (categoryList.length > 0) {
@@ -157,7 +181,10 @@ export default function POSTableOrder() {
               const orderData = await api.orders.getByTable(tableId);
               const tabs: OrderTab[] = (orderData.orders || []).map((o) => ({
                 id: o.id,
+                voidedAt: (o as { voidedAt?: string | null }).voidedAt ?? null,
+                voidedByName: (o as { voidedByName?: string | null }).voidedByName ?? null,
                 items: (o.items || []).map((item) => ({
+                  id: (item as { id?: string }).id,
                   productId: item.productId,
                   name: item.name,
                   quantity: item.quantity,
@@ -168,6 +195,9 @@ export default function POSTableOrder() {
                   isComplimentary: (item as { isComplimentary?: boolean }).isComplimentary,
                   servedBy: (item as { servedBy?: string }).servedBy,
                   servedByName: (item as { servedByName?: string }).servedByName,
+                  specialRequest: (item as { specialRequest?: string | null }).specialRequest ?? null,
+                  isVoided: (item as { isVoided?: boolean }).isVoided ?? false,
+                  voidedByName: (item as { voidedByName?: string | null }).voidedByName ?? null,
                 })),
                 sent: true,
               }));
@@ -189,6 +219,36 @@ export default function POSTableOrder() {
     return () => { cancelled = true; };
   }, [tableId]);
 
+  const refetchOrders = useCallback(async () => {
+    if (!tableId) return;
+    try {
+      const orderData = await api.orders.getByTable(tableId);
+      const tabs: OrderTab[] = (orderData.orders || []).map((o) => ({
+        id: o.id,
+        voidedAt: (o as { voidedAt?: string | null }).voidedAt ?? null,
+        voidedByName: (o as { voidedByName?: string | null }).voidedByName ?? null,
+        items: (o.items || []).map((item) => ({
+          id: (item as { id?: string }).id,
+          productId: item.productId,
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: item.discount,
+          subtotal: item.subtotal,
+          department: item.department,
+          isComplimentary: (item as { isComplimentary?: boolean }).isComplimentary,
+          servedBy: (item as { servedBy?: string }).servedBy,
+          servedByName: (item as { servedByName?: string }).servedByName,
+          specialRequest: (item as { specialRequest?: string | null }).specialRequest ?? null,
+          isVoided: (item as { isVoided?: boolean }).isVoided ?? false,
+          voidedByName: (item as { voidedByName?: string | null }).voidedByName ?? null,
+        })),
+        sent: true,
+      }));
+      setOrderTabs(tabs.length > 0 ? [...tabs, { id: null, items: [], sent: false }] : [{ id: null, items: [], sent: false }]);
+    } catch (_) {}
+  }, [tableId]);
+
   // Role-based permissions
   const canAddToOrder = hasPermission("create_orders");           // Staff only
   const canSendToDept = hasPermission("send_to_departments");     // Staff only
@@ -199,13 +259,25 @@ export default function POSTableOrder() {
   // Monitor-only: Admin (has no floor operations - no add, no send, no payment)
   const isMonitorOnly = !canAddToOrder && !canSendToDept && !canProcessPayment;
 
+  // Sub-categories for current category (e.g. 1pc, 2pc, Gravy under Chickenjoy)
+  const subCategoriesForCurrent = useMemo(() => {
+    if (selectedCategory === "Ladies Drink" || !selectedCategory) return [];
+    const inCategory = products.filter((p) => p.category === selectedCategory && p.department !== "LD");
+    const subs = [...new Set(inCategory.map((p) => (p as Product & { sub_category?: string }).sub_category).filter((s): s is string => Boolean(s?.trim())))].sort();
+    return subs;
+  }, [products, selectedCategory]);
+
   // Memoize filtered products for better performance (must be before early returns!)
   const filteredProducts = useMemo(
-    () =>
-      selectedCategory === "LD"
-        ? products.filter((p) => p.department === "LD")
-        : products.filter((p) => p.category === selectedCategory && p.department !== "LD"),
-    [products, selectedCategory]
+    () => {
+      if (selectedCategory === "Ladies Drink") return products.filter((p) => p.department === "LD");
+      const byCategory = products.filter((p) => p.category === selectedCategory && p.department !== "LD");
+      if (selectedSubCategory && subCategoriesForCurrent.length > 0) {
+        return byCategory.filter((p) => (p as Product & { sub_category?: string }).sub_category === selectedSubCategory);
+      }
+      return byCategory;
+    },
+    [products, selectedCategory, selectedSubCategory, subCategoriesForCurrent]
   );
   const selectedLdLadyProfile = useMemo(
     () => ldLadies.find((lady) => lady.id === selectedLdLadyForCategory),
@@ -281,7 +353,23 @@ export default function POSTableOrder() {
   <div class="line"></div>
   <div class="bold mb-2">ITEMS</div>
   <div class="items">
-    ${items.map((item) => `<div class="row"><span>${item.quantity}x ${item.name}</span></div>`).join("")}
+    ${deptTitle === "LD"
+      ? (() => {
+          // Group by lady name for LD receipts
+          const byLady: Record<string, typeof items> = {};
+          for (const item of items) {
+            const key = item.servedByName || "Unassigned";
+            if (!byLady[key]) byLady[key] = [];
+            byLady[key].push(item);
+          }
+          return Object.entries(byLady)
+            .map(([lady, ladyItems]) =>
+              `<div style="margin-top:6px;"><div class="bold" style="font-size:12px;border-bottom:1px dashed #ccc;padding-bottom:2px;">${lady}</div>` +
+              ladyItems.map(i => `<div class="row" style="padding-left:8px;"><span>${i.quantity}x ${i.name}${i.specialRequest ? ` <em style="font-size:11px;">(${i.specialRequest})</em>` : ""}</span></div>`).join("") +
+              `</div>`
+            ).join("");
+        })()
+      : items.map((item) => `<div class="row"><span>${item.quantity}x ${item.name}${item.servedByName ? ` <span style="font-size:11px;color:#555;">(${item.servedByName})</span>` : ""}${item.specialRequest ? ` <em style="font-size:11px;">(${item.specialRequest})</em>` : ""}</span></div>`).join("")}
   </div>
   <div class="line"></div>
   <div class="row" style="font-size: 12px; color: #666;"><span>Encoder:</span><span>${encoderName}</span></div>
@@ -326,7 +414,7 @@ export default function POSTableOrder() {
   const orderSent = activeTab?.sent ?? false;
   const hasAnySentOrder = orderTabs.some((t) => t.sent);
   const canAddItems = canAddToOrder && activeTab && !activeTab.sent;
-  const requiresLdLadySelection = selectedCategory === "LD" && !selectedLdLadyForCategory;
+  const requiresLdLadySelection = selectedCategory === "Ladies Drink" && !selectedLdLadyForCategory;
 
   const updateActiveTabItems = (updater: (items: OrderItem[]) => OrderItem[]) => {
     setOrderTabs((prev) =>
@@ -341,8 +429,9 @@ export default function POSTableOrder() {
   const addToOrder = (product: Product) => {
     if (!canAddItems) return;
     if (isLdProduct(product)) {
-      if (selectedCategory === "LD" && selectedLdLadyForCategory) {
-        doAddToOrder(product, selectedLdLadyForCategory, selectedLdLadyProfile?.name);
+      if (selectedCategory === "Ladies Drink" && selectedLdLadyForCategory) {
+        const note = window.prompt("Special request (optional):");
+        doAddToOrder(product, selectedLdLadyForCategory, selectedLdLadyProfile?.name, note?.trim() || undefined);
         return;
       }
       setPendingLdProduct(product);
@@ -350,18 +439,19 @@ export default function POSTableOrder() {
       setSelectedLady(selectedLdLadyForCategory || "");
       return;
     }
-    doAddToOrder(product, undefined, undefined);
+    const note = window.prompt("Special request (optional):");
+    doAddToOrder(product, undefined, undefined, note?.trim() || undefined);
   };
 
-  const doAddToOrder = (product: Product, servedBy?: string, servedByName?: string) => {
+  const doAddToOrder = (product: Product, servedBy?: string, servedByName?: string, specialRequest?: string) => {
     if (!canAddItems) return;
     updateActiveTabItems((prev) => {
       const existing = prev.find(
-        (item) => item.productId === product.id && (item.servedBy ?? "") === (servedBy ?? "")
+        (item) => item.productId === product.id && (item.servedBy ?? "") === (servedBy ?? "") && (item.specialRequest ?? "") === (specialRequest ?? "")
       );
       if (existing) {
         return prev.map((item) =>
-          item.productId === product.id && (item.servedBy ?? "") === (servedBy ?? "")
+          item.productId === product.id && (item.servedBy ?? "") === (servedBy ?? "") && (item.specialRequest ?? "") === (specialRequest ?? "")
             ? { ...item, quantity: item.quantity + 1, subtotal: (item.quantity + 1) * item.unitPrice - item.discount }
             : item
         );
@@ -378,6 +468,7 @@ export default function POSTableOrder() {
           department: product.department,
           servedBy,
           servedByName,
+          specialRequest: specialRequest || undefined,
         },
       ];
     });
@@ -458,8 +549,9 @@ export default function POSTableOrder() {
   };
 
   // Current tab totals (for display)
-  const subtotal = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
+  const subtotal = orderItems.filter((i) => !i.isVoided).reduce((sum, item) => sum + item.subtotal, 0);
   const complimentaryTotal = orderItems
+    .filter((i) => !i.isVoided)
     .filter((item) => item.isComplimentary)
     .reduce((sum, item) => sum + item.subtotal, 0);
   const chargeableSubtotal = subtotal - complimentaryTotal;
@@ -470,8 +562,8 @@ export default function POSTableOrder() {
   // Combined totals from ALL sent tabs (for payment)
   const sentTabs = orderTabs.filter((t) => t.sent);
   const combinedItems = sentTabs.flatMap((t) => t.items);
-  const combinedSubtotal = combinedItems.reduce((s, i) => s + i.subtotal, 0);
-  const combinedComplimentary = combinedItems.filter((i) => i.isComplimentary).reduce((s, i) => s + i.subtotal, 0);
+  const combinedSubtotal = combinedItems.filter((i) => !i.isVoided).reduce((s, i) => s + i.subtotal, 0);
+  const combinedComplimentary = combinedItems.filter((i) => !i.isVoided && i.isComplimentary).reduce((s, i) => s + i.subtotal, 0);
   const combinedChargeable = combinedSubtotal - combinedComplimentary;
   const combinedTax = combinedChargeable * taxRateDecimal;
   const combinedServiceCharge = computeServiceCharge(combinedChargeable);
@@ -490,27 +582,60 @@ export default function POSTableOrder() {
     setSending(true);
     try {
       if (!tableId) return;
+      // Capture items before state updates for printing
+      const itemsToSend = [...orderItems];
+      const barItemsSnap = itemsToSend.filter((i) => i.department === "Bar");
+      const kitchenItemsSnap = itemsToSend.filter((i) => i.department === "Kitchen");
+      const ldItemsSnap = itemsToSend.filter((i) => i.department === "LD");
+
       const result = await api.orders.create({
         tableId,
         employeeId: user?.employeeId,
-        items: orderItems,
+        items: itemsToSend,
         subtotal,
         tax,
         total,
       });
       setTable((prev) => prev ? { ...prev, status: "occupied", currentOrderId: result.orderId } : prev);
       await new Promise((resolve) => setTimeout(resolve, 500));
-      if (barItems.length > 0) toast.success(`${barItems.length} item(s) sent to Bar`);
-      if (kitchenItems.length > 0) toast.success(`${kitchenItems.length} item(s) sent to Kitchen`);
-      if (ldItems.length > 0) toast.success(`${ldItems.length} item(s) sent to LD`);
+      if (barItemsSnap.length > 0) toast.success(`${barItemsSnap.length} item(s) sent to Bar`);
+      if (kitchenItemsSnap.length > 0) toast.success(`${kitchenItemsSnap.length} item(s) sent to Kitchen`);
+      if (ldItemsSnap.length > 0) toast.success(`${ldItemsSnap.length} item(s) sent to LD`);
       // Convert tab to sent, add new draft tab
       setOrderTabs((prev) => {
         const next = [...prev];
-        next[activeTabIndex] = { id: result.orderId, items: orderItems, sent: true };
+        next[activeTabIndex] = { id: result.orderId, items: itemsToSend, sent: true };
         next.push({ id: null, items: [], sent: false });
         return next;
       });
       setActiveTabIndex(activeTabIndex + 1);
+
+      // Auto-print dept receipts and cashier order slip
+      let printDelay = 0;
+      if (barItemsSnap.length > 0) {
+        setTimeout(() => printDeptReceipt("BAR", "Drinks & Beverages", barItemsSnap), printDelay);
+        printDelay += 500;
+      }
+      if (kitchenItemsSnap.length > 0) {
+        setTimeout(() => printDeptReceipt("KITCHEN", "Food Orders", kitchenItemsSnap), printDelay);
+        printDelay += 500;
+      }
+      if (ldItemsSnap.length > 0) {
+        setTimeout(() => printDeptReceipt("LD", "LD Orders", ldItemsSnap), printDelay);
+        printDelay += 500;
+      }
+      // Cashier order slip (for customer to verify & sign)
+      setTimeout(() => printCashierOrderSlip(itemsToSend, result.orderId), printDelay);
+      printDelay += 500;
+
+      // Auto-logout waiter after prints are triggered
+      const isWaiter = user?.role === "Staff" || user?.role === "Operations Staff";
+      if (isWaiter) {
+        setTimeout(() => {
+          logout();
+          navigate("/");
+        }, printDelay);
+      }
     } catch {
       toast.error("Failed to send order to departments");
     } finally {
@@ -529,42 +654,103 @@ export default function POSTableOrder() {
   const discountedTax = discountedSubtotal * taxRateDecimal;
   const discountedServiceCharge = computeServiceCharge(discountedSubtotal);
   const discountedTotal = discountedSubtotal + discountedTax + discountedServiceCharge;
-  const hasCardSurcharge = selectedPaymentMethod === "debit" || selectedPaymentMethod === "credit";
+  // Card surcharge: for non-split use selected method; for split calculate per card entry
+  const hasCardSurcharge = !useSplitPayment && (selectedPaymentMethod === "debit" || selectedPaymentMethod === "credit");
   const cardSurcharge = hasCardSurcharge ? discountedSubtotal * cardSurchargeDecimal : 0;
-  const finalTotal = discountedTotal + cardSurcharge;
+  const splitCardSurcharge = useSplitPayment
+    ? splitPayments.reduce((sum, sp) => {
+        if (sp.method === "debit" || sp.method === "credit") {
+          return sum + (Number(sp.amount) || 0) * cardSurchargeDecimal;
+        }
+        return sum;
+      }, 0)
+    : 0;
+  const finalTotal = discountedTotal + (useSplitPayment ? splitCardSurcharge : cardSurcharge);
   const change = amountTendered ? Math.max(0, parseFloat(amountTendered) - finalTotal) : 0;
+  // For split: entered amounts must sum to base discounted total (card surcharge added automatically)
   const splitTotal = splitPayments.reduce((sum, split) => sum + (Number(split.amount) || 0), 0);
-  const splitRemaining = finalTotal - splitTotal;
+  const splitRemaining = discountedTotal - splitTotal;
   const splitValid =
     useSplitPayment &&
     splitPayments.length >= 2 &&
-    splitPayments.every((split) => Number(split.amount) > 0) &&
+    splitPayments.every((sp, idx) =>
+      Number(sp.amount) > 0 && (sp.method !== "charge" || (splitChargeNames[idx] || "").trim())
+    ) &&
     Math.abs(splitRemaining) < 0.01;
 
-  const handleRequestVoid = async () => {
+  const openVoidModal = () => {
     if (!hasAnySentOrder) {
       toast.error("No sent orders to void");
       return;
     }
-    const reason = window.prompt("Enter reason for void request:");
-    if (!reason || !reason.trim()) return;
+    setVoidReason("");
+    setVoidEmployeeId("");
+    setVoidPassword("");
+    setVoidError(null);
+    setVoidModalOpen(true);
+  };
+
+  const handleRequestVoid = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!voidEmployeeId.trim() || !voidPassword) {
+      setVoidError("Manager Employee ID and password are required");
+      return;
+    }
+    const tabsToVoid = sentTabs.filter((tab) => tab.id);
+    if (!tabsToVoid.length) {
+      setVoidError("No sent orders to void");
+      return;
+    }
+    setVoiding(true);
+    setVoidError(null);
     try {
-      await Promise.all(
-        sentTabs
-          .filter((tab) => tab.id)
-          .map((tab) =>
-            api.paymentVoids.create({
-              orderId: Number(tab.id),
-              paymentMethod: "cash",
-              voidedAmount: estimateTabTotal(tab.items),
-              reason: reason.trim(),
-              requestedBy: user?.id || "",
-            })
-          )
-      );
-      toast.success("Void request submitted");
+      for (const tab of tabsToVoid) {
+        await api.orders.void(tab.id!, {
+          employeeId: voidEmployeeId.trim(),
+          password: voidPassword,
+          reason: voidReason.trim() || undefined,
+        });
+      }
+      setVoidModalOpen(false);
+      await refetchOrders();
+      toast.success("Orders voided. Receipt will show voided and manager name.");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to submit void request");
+      setVoidError(e instanceof Error ? e.message : "Failed to void");
+    } finally {
+      setVoiding(false);
+    }
+  };
+
+  const openItemVoidModal = (item: OrderItem) => {
+    if (!item.id) return;
+    setPendingVoidItem(item);
+    setItemVoidEmployeeId("");
+    setItemVoidPassword("");
+    setItemVoidError(null);
+    setItemVoidModalOpen(true);
+  };
+
+  const handleItemVoid = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingVoidItem?.id || !itemVoidEmployeeId.trim() || !itemVoidPassword) {
+      setItemVoidError("Manager Employee ID and password are required");
+      return;
+    }
+    setItemVoiding(true);
+    setItemVoidError(null);
+    try {
+      await api.orderItems.void(pendingVoidItem.id, {
+        employeeId: itemVoidEmployeeId.trim(),
+        password: itemVoidPassword,
+      });
+      setItemVoidModalOpen(false);
+      setPendingVoidItem(null);
+      await refetchOrders();
+      toast.success("Item voided");
+    } catch (e) {
+      setItemVoidError(e instanceof Error ? e.message : "Failed to void item");
+    } finally {
+      setItemVoiding(false);
     }
   };
 
@@ -606,20 +792,20 @@ export default function POSTableOrder() {
         if (!splitValid) {
           throw new Error("Split payment amounts must exactly match the total");
         }
-        if (sentTabs.length !== 1 || !sentTabs[0]?.id) {
-          throw new Error("Split payment currently supports one sent order only");
-        }
-        const createdSplits = await api.splitPayments.create(
-          sentTabs[0].id,
-          splitPayments.map((split) => ({
-            amount: Number(split.amount) || 0,
-            paymentMethod: split.method,
+        // Use payAll with splits for all orders (single or multiple)
+        const payResult = await api.tables.payAll(
+          tableId,
+          "split_payment",
+          appliedDiscount?.name,
+          discountAmount > 0 ? discountAmount : undefined,
+          undefined,
+          splitPayments.map((sp, idx) => ({
+            amount: Number(sp.amount) || 0,
+            paymentMethod: sp.method,
+            customerName: sp.method === "charge" ? (splitChargeNames[idx] || "") : undefined,
           }))
         );
-        for (const split of createdSplits) {
-          await api.splitPayments.pay(String(split.id), user?.id || "");
-        }
-        paidOrderIds = [sentTabs[0].id];
+        paidOrderIds = payResult.orderIds || [];
       } else {
         const payResult = await api.tables.payAll(
           tableId,
@@ -632,7 +818,7 @@ export default function POSTableOrder() {
       }
       setPaymentStep("printing");
       const paymentMethodLabel = useSplitPayment
-        ? "split_payment"
+        ? `Split (${splitPayments.map((sp, idx) => `${sp.method === "charge" ? `Charge-${splitChargeNames[idx] || ""}` : sp.method.toUpperCase()} ₱${sp.amount}`).join(" / ")})`
         : selectedPaymentMethod === "charge"
           ? `Charge - ${chargeCustomerName}`
           : selectedPaymentMethod;
@@ -643,9 +829,13 @@ export default function POSTableOrder() {
         table: `${table?.area} - ${table?.name}`,
         cashier: user?.name || "Staff",
         items: combinedItems.map((item) => ({
-          name: item.name,
+          name: item.isVoided
+            ? `${item.name} (VOIDED${item.voidedByName ? ` by ${item.voidedByName}` : ""})`
+            : item.specialRequest
+              ? `${item.name} - ${item.specialRequest}`
+              : item.name,
           quantity: item.quantity,
-          subtotal: item.subtotal,
+          subtotal: item.isVoided ? 0 : item.subtotal,
           isComplimentary: item.isComplimentary,
         })),
         subtotal: combinedSubtotal,
@@ -653,7 +843,7 @@ export default function POSTableOrder() {
         discount: discountAmount > 0 ? discountAmount : undefined,
         serviceCharge: discountedServiceCharge,
         tax: discountedTax,
-        cardSurcharge: hasCardSurcharge ? cardSurcharge : undefined,
+        cardSurcharge: (hasCardSurcharge && cardSurcharge > 0) || (useSplitPayment && splitCardSurcharge > 0) ? (useSplitPayment ? splitCardSurcharge : cardSurcharge) : undefined,
         total: finalTotal,
         paymentMethod: paymentMethodLabel,
         amountPaid: !useSplitPayment && selectedPaymentMethod === "cash" ? parseFloat(amountTendered) || finalTotal : finalTotal,
@@ -686,6 +876,64 @@ export default function POSTableOrder() {
   };
 
   // Browser print fallback function
+  const printCashierOrderSlip = useCallback(
+    (items: OrderItem[], orderId: string) => {
+      if (!table || items.length === 0) return;
+      const win = window.open("", "_blank", "width=400,height=700");
+      if (!win) {
+        toast.error("Pop-up blocked. Allow pop-ups for cashier slip.");
+        return;
+      }
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
+      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      const slipSubtotal = items.reduce((s, i) => s + i.subtotal, 0);
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Order Slip</title>
+<style>
+  body { font-family: monospace; font-size: 13px; padding: 20px; max-width: 340px; margin: 0 auto; }
+  .center { text-align: center; }
+  .bold { font-weight: bold; }
+  .row { display: flex; justify-content: space-between; margin: 3px 0; }
+  .line { border-top: 1px dashed #aaa; margin: 8px 0; }
+  .sig { margin-top: 32px; border-top: 1px solid #000; padding-top: 4px; font-size: 11px; color: #555; }
+  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style>
+</head><body>
+  <div class="center">
+    <div class="bold" style="font-size:18px;">RABBIT ALLEY</div>
+    <div style="font-size:12px;">Bar &amp; Restaurant</div>
+  </div>
+  <div class="line"></div>
+  <div class="center bold" style="font-size:14px;margin:6px 0;">ORDER SLIP</div>
+  <div class="row"><span>Order No:</span><span>${orderId}</span></div>
+  <div class="row"><span>Date:</span><span>${dateStr}</span></div>
+  <div class="row"><span>Time:</span><span>${timeStr}</span></div>
+  <div class="row"><span>Area:</span><span>${table.area}</span></div>
+  <div class="row"><span>Table:</span><span>Table ${table.name}</span></div>
+  <div class="row"><span>Waiter:</span><span>${user?.name || "Staff"}</span></div>
+  <div class="line"></div>
+  <div class="bold" style="margin-bottom:4px;">ITEMS</div>
+  ${items.map((item) => `
+    <div class="row">
+      <span>${item.quantity}x ${item.name}${item.specialRequest ? ` <em style="font-size:11px;">(${item.specialRequest})</em>` : ""}</span>
+      <span>&#8369;${item.subtotal.toFixed(2)}</span>
+    </div>
+  `).join("")}
+  <div class="line"></div>
+  <div class="row bold"><span>SUBTOTAL:</span><span>&#8369;${slipSubtotal.toFixed(2)}</span></div>
+  <div class="line"></div>
+  <div style="font-size:11px;color:#888;text-align:center;">This is NOT the official receipt.<br>Final bill subject to taxes &amp; service charge.</div>
+  <div class="sig center">Customer Signature: ___________________________</div>
+</body></html>`;
+      win.document.write(html);
+      win.document.close();
+      win.focus();
+      setTimeout(() => { win.print(); win.close(); }, 150);
+    },
+    [table, user?.name]
+  );
+
   const printReceiptViaBrowser = (receipt: {
     orderNumber: string;
     date: string;
@@ -794,6 +1042,49 @@ export default function POSTableOrder() {
     }
   };
 
+  const handleReprint = () => {
+    const tab = orderTabs[activeTabIndex];
+    if (!tab || !table) return;
+    const itemsForSlip = tab.items.filter((i) => !i.isVoided);
+    const reprintSubtotal = itemsForSlip.reduce((s, i) => s + i.subtotal, 0);
+    const reprintComplimentary = itemsForSlip.filter((i) => i.isComplimentary).reduce((s, i) => s + i.subtotal, 0);
+    const reprintChargeable = reprintSubtotal - reprintComplimentary;
+    const reprintTax = reprintChargeable * taxRateDecimal;
+    const reprintService = computeServiceCharge(reprintChargeable);
+    const reprintTotal = reprintChargeable + reprintTax + reprintService;
+    const now = new Date();
+    const receiptData = {
+      orderNumber: tab.id || "Draft",
+      date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
+      time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+      table: `${table.area} - ${table.name}`,
+      cashier: user?.name || "Staff",
+      items: tab.items.map((item) => ({
+        name: item.isVoided
+          ? `${item.name} (VOIDED${item.voidedByName ? ` by ${item.voidedByName}` : ""})`
+          : item.specialRequest
+            ? `${item.name} - ${item.specialRequest}`
+            : item.name,
+        quantity: item.quantity,
+        subtotal: item.isVoided ? 0 : item.subtotal,
+        isComplimentary: item.isComplimentary,
+      })),
+      subtotal: reprintSubtotal,
+      complimentary: reprintComplimentary > 0 ? reprintComplimentary : undefined,
+      serviceCharge: reprintService,
+      tax: reprintTax,
+      total: reprintTotal,
+      paymentMethod: "Reprint",
+      amountPaid: reprintTotal,
+      change: 0,
+    };
+    if (tab.voidedByName) {
+      receiptData.items.push({ name: `ORDER VOIDED - Manager: ${tab.voidedByName}`, quantity: 1, subtotal: 0 });
+    }
+    printReceiptViaBrowser(receiptData);
+    toast.success("Reprint opened in new window");
+  };
+
   return (
     <AppLayout>
       {/* Compact header */}
@@ -840,12 +1131,36 @@ export default function POSTableOrder() {
             ))}
           </div>
 
+          {/* Sub-categories (e.g. 1pc, 2pc, Gravy) when category has options */}
+          {selectedCategory && selectedCategory !== "Ladies Drink" && subCategoriesForCurrent.length > 0 && (
+            <div className="flex gap-2 flex-wrap items-center">
+              <span className="text-xs text-muted-foreground mr-1">Options:</span>
+              <Button
+                variant={!selectedSubCategory ? "default" : "outline"}
+                size="sm"
+                onClick={() => setSelectedSubCategory("")}
+              >
+                All
+              </Button>
+              {subCategoriesForCurrent.map((sub) => (
+                <Button
+                  key={sub}
+                  variant={selectedSubCategory === sub ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setSelectedSubCategory(sub)}
+                >
+                  {sub}
+                </Button>
+              ))}
+            </div>
+          )}
+
           {hasAnySentOrder && canAddToOrder && (
             <p className="text-xs text-muted-foreground">
               Tap &quot;+ New Order&quot; in the order panel to add another round.
             </p>
           )}
-          {selectedCategory === "LD" && (
+          {selectedCategory === "Ladies Drink" && (
             <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">Step 1: Select Lady</p>
@@ -862,7 +1177,7 @@ export default function POSTableOrder() {
               </div>
               {ldLadies.length === 0 ? (
                 <p className="text-xs text-amber-600">
-                  No LD ladies found. Add staff with incentive rate in Staff first.
+                  No ladies found. Add staff members in the Staff tab first.
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-2">
@@ -945,6 +1260,12 @@ export default function POSTableOrder() {
             <span className="text-sm font-medium">
               {orderSent ? "Sent" : "Adding items"}
             </span>
+            {orderSent && orderItems.length > 0 && canPrintReceipt && (
+              <Button variant="ghost" size="sm" onClick={handleReprint} title="Reprint this order">
+                <Printer className="w-4 h-4 mr-1" />
+                Reprint
+              </Button>
+            )}
           </div>
 
           {/* Order Items - Scrollable */}
@@ -956,39 +1277,62 @@ export default function POSTableOrder() {
             ) : (
               orderItems.map((item) => (
                 <div
-                  key={`${item.productId}:${item.servedBy ?? ""}`}
+                  key={item.id ?? `${item.productId}:${item.servedBy ?? ""}`}
                   className={`flex items-center justify-between p-2 rounded-lg ${
-                    item.isComplimentary 
-                      ? "bg-purple-500/10 border border-purple-500/30" 
-                      : "bg-background"
+                    item.isVoided
+                      ? "bg-muted/50 opacity-75"
+                      : item.isComplimentary
+                        ? "bg-purple-500/10 border border-purple-500/30"
+                        : "bg-background"
                   }`}
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-wrap">
                       <p
-                        className={`text-sm font-medium break-words ${item.isComplimentary ? "text-purple-600" : ""}`}
+                        className={`text-sm font-medium break-words ${item.isVoided ? "line-through text-muted-foreground" : ""} ${item.isComplimentary ? "text-purple-600" : ""}`}
                         title={item.name}
                       >
                         {item.name}
                       </p>
-                      {item.servedByName && (
+                      {item.specialRequest && (
+                        <span className="text-xs text-amber-600 dark:text-amber-400 italic" title={item.specialRequest}>
+                          ({item.specialRequest})
+                        </span>
+                      )}
+                      {item.isVoided && (
+                        <span className="text-xs font-medium text-destructive shrink-0">
+                          VOIDED{item.voidedByName ? ` by ${item.voidedByName}` : ""}
+                        </span>
+                      )}
+                      {item.servedByName && !item.isVoided && (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-violet-500/20 text-violet-700 dark:text-violet-300 shrink-0">
                           <User className="w-3 h-3" />
                           {item.servedByName}
                         </span>
                       )}
-                      {item.isComplimentary && (
+                      {item.isComplimentary && !item.isVoided && (
                         <Gift className="w-3 h-3 text-purple-500 shrink-0" />
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground">
                       {formatCurrency(item.unitPrice)} × {item.quantity}
-                      {item.isComplimentary && <span className="ml-1 text-purple-500">(Complimentary)</span>}
+                      {item.isComplimentary && !item.isVoided && <span className="ml-1 text-purple-500">(Complimentary)</span>}
                       {item.discount > 0 && <span className="ml-1 text-green-600">(-{formatCurrency(item.discount)})</span>}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {canAddItems ? (
+                    {orderSent && item.id && !item.isVoided && canRequestVoid && (
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-6 w-6 text-destructive hover:text-destructive"
+                        onClick={() => openItemVoidModal(item)}
+                        title="Void this item (manager auth)"
+                      >
+                        <Ban className="w-3 h-3" />
+                      </Button>
+                    )}
+                    {canAddItems && !item.isVoided ? (
                       <>
                         <Button
                           variant={item.isComplimentary ? "default" : "outline"}
@@ -1028,10 +1372,10 @@ export default function POSTableOrder() {
                           </Button>
                         </div>
                       </>
-                    ) : (
+                    ) : !item.isVoided ? (
                       <span className="text-sm text-muted-foreground">× {item.quantity}</span>
-                    )}
-                    <span className="font-medium text-sm w-20 text-right">
+                    ) : null}
+                    <span className={`font-medium text-sm w-20 text-right ${item.isVoided ? "text-muted-foreground line-through" : ""}`}>
                       {formatCurrency(item.subtotal)}
                     </span>
                   </div>
@@ -1099,7 +1443,7 @@ export default function POSTableOrder() {
                 <Button
                   variant="outline"
                   disabled={!hasAnySentOrder}
-                  onClick={handleRequestVoid}
+                  onClick={openVoidModal}
                 >
                   Request Void
                 </Button>
@@ -1331,12 +1675,25 @@ export default function POSTableOrder() {
 
                   <div className="border-t border-dashed border-gray-300 dark:border-gray-600 pt-3 mb-3">
                     <p className="font-bold mb-2">ITEMS</p>
-                    <div className="space-y-2">
-                      {ldItems.map((item) => (
-                        <div key={item.productId} className="flex justify-between">
-                          <span>{item.quantity}x {item.name}</span>
-                        </div>
-                      ))}
+                    <div className="space-y-3">
+                      {(() => {
+                        const byLady: Record<string, typeof ldItems> = {};
+                        for (const item of ldItems) {
+                          const key = item.servedByName || "Unassigned";
+                          if (!byLady[key]) byLady[key] = [];
+                          byLady[key].push(item);
+                        }
+                        return Object.entries(byLady).map(([ladyName, ladyItems]) => (
+                          <div key={ladyName}>
+                            <p className="text-xs font-bold border-b border-dashed border-gray-300 dark:border-gray-600 pb-1 mb-1">{ladyName}</p>
+                            {ladyItems.map((item, i) => (
+                              <div key={i} className="flex justify-between pl-2">
+                                <span>{item.quantity}x {item.name}{item.specialRequest && <em className="text-xs text-muted-foreground ml-1">({item.specialRequest})</em>}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ));
+                      })()}
                     </div>
                   </div>
 
@@ -1612,74 +1969,99 @@ export default function POSTableOrder() {
                 </div>
                 {useSplitPayment && (
                   <div className="space-y-2">
-                    {sentTabs.length !== 1 ? (
-                      <p className="text-xs text-amber-600">
-                        Split payment is currently available for one sent order only.
-                      </p>
-                    ) : (
-                      <>
-                        {splitPayments.map((split, idx) => (
-                          <div key={idx} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
-                            <Input
-                              type="number"
-                              min={0}
-                              step="0.01"
-                              value={split.amount}
-                              onChange={(e) =>
-                                setSplitPayments((prev) =>
-                                  prev.map((row, rowIdx) =>
-                                    rowIdx === idx ? { ...row, amount: e.target.value } : row
-                                  )
+                    {splitPayments.map((split, idx) => (
+                      <div key={idx} className="space-y-1">
+                        <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={split.amount}
+                            onChange={(e) =>
+                              setSplitPayments((prev) =>
+                                prev.map((row, rowIdx) =>
+                                  rowIdx === idx ? { ...row, amount: e.target.value } : row
                                 )
-                              }
-                              placeholder="Amount"
-                            />
-                            <select
-                              value={split.method}
-                              onChange={(e) =>
-                                setSplitPayments((prev) =>
-                                  prev.map((row, rowIdx) =>
-                                    rowIdx === idx ? { ...row, method: e.target.value as SplitMethod } : row
-                                  )
+                              )
+                            }
+                            placeholder="Amount"
+                          />
+                          <select
+                            value={split.method}
+                            onChange={(e) => {
+                              const newMethod = e.target.value as SplitMethod;
+                              setSplitPayments((prev) =>
+                                prev.map((row, rowIdx) =>
+                                  rowIdx === idx ? { ...row, method: newMethod } : row
                                 )
+                              );
+                              if (newMethod !== "charge") {
+                                setSplitChargeNames((prev) => { const n = { ...prev }; delete n[idx]; return n; });
                               }
-                              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            >
-                              <option value="cash">Cash</option>
-                              <option value="gcash">GCash</option>
-                              <option value="bank">Bank</option>
-                            </select>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-10 w-10"
-                              disabled={splitPayments.length <= 2}
-                              onClick={() =>
-                                setSplitPayments((prev) => prev.filter((_, rowIdx) => rowIdx !== idx))
-                              }
-                            >
-                              <X className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        ))}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full"
-                          onClick={() =>
-                            setSplitPayments((prev) => [...prev, { amount: "", method: "cash" }])
-                          }
-                        >
-                          <Plus className="w-3 h-3 mr-1" />
-                          Add split
-                        </Button>
-                        <p className={`text-xs ${Math.abs(splitRemaining) < 0.01 ? "text-green-600" : "text-amber-600"}`}>
-                          {Math.abs(splitRemaining) < 0.01
-                            ? "Split total matches payable amount."
-                            : `Remaining: ${formatCurrency(splitRemaining)}`}
-                        </p>
-                      </>
-                    )}
+                            }}
+                            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="cash">Cash</option>
+                            <option value="gcash">GCash</option>
+                            <option value="bank">Bank</option>
+                            <option value="debit">Debit (+{posSettings.cardSurcharge}%)</option>
+                            <option value="credit">Credit (+{posSettings.cardSurcharge}%)</option>
+                            <option value="charge">Charge/Utang</option>
+                          </select>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-10 w-10"
+                            disabled={splitPayments.length <= 2}
+                            onClick={() => {
+                              setSplitPayments((prev) => prev.filter((_, rowIdx) => rowIdx !== idx));
+                              setSplitChargeNames((prev) => {
+                                const n: Record<number, string> = {};
+                                Object.entries(prev).forEach(([k, v]) => {
+                                  const ki = Number(k);
+                                  if (ki < idx) n[ki] = v;
+                                  else if (ki > idx) n[ki - 1] = v;
+                                });
+                                return n;
+                              });
+                            }}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                        {split.method === "charge" && (
+                          <Input
+                            placeholder="Customer name (required for charge)"
+                            value={splitChargeNames[idx] || ""}
+                            onChange={(e) =>
+                              setSplitChargeNames((prev) => ({ ...prev, [idx]: e.target.value }))
+                            }
+                            className="text-sm"
+                          />
+                        )}
+                        {(split.method === "debit" || split.method === "credit") && Number(split.amount) > 0 && (
+                          <p className="text-xs text-blue-600">
+                            Card fee: +{formatCurrency(Number(split.amount) * cardSurchargeDecimal)} = {formatCurrency(Number(split.amount) * (1 + cardSurchargeDecimal))} collected
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() =>
+                        setSplitPayments((prev) => [...prev, { amount: "", method: "cash" }])
+                      }
+                    >
+                      <Plus className="w-3 h-3 mr-1" />
+                      Add split
+                    </Button>
+                    <p className={`text-xs ${Math.abs(splitRemaining) < 0.01 ? "text-green-600" : "text-amber-600"}`}>
+                      {Math.abs(splitRemaining) < 0.01
+                        ? `Split total matches base amount${splitCardSurcharge > 0 ? `. Card fee: +${formatCurrency(splitCardSurcharge)}` : ""}.`
+                        : `Remaining: ${formatCurrency(splitRemaining)} (enter amounts to match ${formatCurrency(discountedTotal)})`}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1777,7 +2159,7 @@ export default function POSTableOrder() {
                 className="w-full h-12 text-lg"
                 onClick={handleConfirmPayment}
                 disabled={
-                  (useSplitPayment && (!splitValid || sentTabs.length !== 1)) ||
+                  (useSplitPayment && !splitValid) ||
                   (!useSplitPayment && selectedPaymentMethod === "cash" && (!amountTendered || parseFloat(amountTendered) < finalTotal)) ||
                   (!useSplitPayment && selectedPaymentMethod === "charge" && !chargeCustomerName.trim())
                 }
@@ -1965,7 +2347,7 @@ export default function POSTableOrder() {
               ))}
             </select>
             {ldLadies.length === 0 && (
-              <p className="text-xs text-amber-600">No LD ladies. Add staff with incentive rate in Staff.</p>
+              <p className="text-xs text-amber-600">No ladies found. Add staff members in the Staff tab first.</p>
             )}
           </div>
           <div className="flex gap-2 mt-4">
@@ -1978,7 +2360,8 @@ export default function POSTableOrder() {
               onClick={() => {
                 if (!pendingLdProduct || !selectedLady) return;
                 const lady = ldLadies.find((l) => l.id === selectedLady);
-                doAddToOrder(pendingLdProduct, selectedLady, lady?.name);
+                const note = window.prompt("Special request (optional):");
+                doAddToOrder(pendingLdProduct, selectedLady, lady?.name, note?.trim() || undefined);
                 setSelectedLdLadyForCategory(selectedLady);
                 setLadyModalOpen(false);
                 setPendingLdProduct(null);
@@ -1988,6 +2371,99 @@ export default function POSTableOrder() {
               Add to Order
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Request Void Modal - Manager password, then order(s) marked voided on receipt */}
+      <Dialog open={voidModalOpen} onOpenChange={setVoidModalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="w-5 h-5" />
+              Void Order(s)
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Manager must enter credentials. Voided orders will show &quot;Voided&quot; and your name on the receipt.
+          </p>
+          <form onSubmit={handleRequestVoid} className="space-y-4 mt-4">
+            <div>
+              <Label>Reason (optional)</Label>
+              <Input
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="e.g. Wrong order"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label>Manager Employee ID</Label>
+              <Input
+                value={voidEmployeeId}
+                onChange={(e) => { setVoidEmployeeId(e.target.value); setVoidError(null); }}
+                placeholder="e.g. MGR001"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label>Password</Label>
+              <Input
+                type="password"
+                value={voidPassword}
+                onChange={(e) => { setVoidPassword(e.target.value); setVoidError(null); }}
+                placeholder="Manager password"
+                className="mt-1"
+              />
+            </div>
+            {voidError && <p className="text-sm text-destructive">{voidError}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setVoidModalOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={voiding}>{voiding ? "Voiding…" : "Void Order(s)"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Per-item Void Modal */}
+      <Dialog open={itemVoidModalOpen} onOpenChange={(open) => { setItemVoidModalOpen(open); if (!open) setPendingVoidItem(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="w-5 h-5" />
+              Void Item
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {pendingVoidItem && (
+              <span>Void &quot;{pendingVoidItem.name}&quot;? Manager must enter credentials.</span>
+            )}
+          </p>
+          <form onSubmit={handleItemVoid} className="space-y-4 mt-4">
+            <div>
+              <Label>Manager Employee ID</Label>
+              <Input
+                value={itemVoidEmployeeId}
+                onChange={(e) => { setItemVoidEmployeeId(e.target.value); setItemVoidError(null); }}
+                placeholder="e.g. MGR001"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label>Password</Label>
+              <Input
+                type="password"
+                value={itemVoidPassword}
+                onChange={(e) => { setItemVoidPassword(e.target.value); setItemVoidError(null); }}
+                placeholder="Manager password"
+                className="mt-1"
+              />
+            </div>
+            {itemVoidError && <p className="text-sm text-destructive">{itemVoidError}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => { setItemVoidModalOpen(false); setPendingVoidItem(null); }}>Cancel</Button>
+              <Button type="submit" disabled={itemVoiding}>{itemVoiding ? "Voiding…" : "Void Item"}</Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -2245,10 +2721,10 @@ export default function POSTableOrder() {
                     <span>{taxLabel}:</span>
                     <span>{formatCurrency(discountedTax)}</span>
                   </div>
-                  {hasCardSurcharge && (
+                  {(hasCardSurcharge || (useSplitPayment && splitCardSurcharge > 0)) && (
                     <div className="flex justify-between">
                       <span>Card Fee ({posSettings.cardSurcharge.toFixed(2).replace(/\.00$/, "")}%):</span>
-                      <span>{formatCurrency(cardSurcharge)}</span>
+                      <span>{formatCurrency(useSplitPayment ? splitCardSurcharge : cardSurcharge)}</span>
                     </div>
                   )}
                   <div className="flex justify-between font-bold text-sm pt-1">
@@ -2259,18 +2735,32 @@ export default function POSTableOrder() {
 
                 {/* Payment Info */}
                 <div className="border-b border-dashed border-gray-300 dark:border-gray-700 pb-3 mb-3">
-                  <div className="flex justify-between">
-                    <span>Payment:</span>
-                    <span>{useSplitPayment ? "SPLIT" : selectedPaymentMethod.toUpperCase()}</span>
-                  </div>
-                  <div className="flex justify-between font-bold">
-                    <span>Amount Paid:</span>
-                    <span>{formatCurrency(!useSplitPayment && selectedPaymentMethod === "cash" ? parseFloat(amountTendered) || finalTotal : finalTotal)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Change:</span>
-                    <span>{formatCurrency(!useSplitPayment && selectedPaymentMethod === "cash" ? change : 0)}</span>
-                  </div>
+                  {useSplitPayment ? (
+                    <div className="space-y-1">
+                      <span className="font-medium">SPLIT PAYMENT</span>
+                      {splitPayments.map((sp, idx) => (
+                        <div key={idx} className="flex justify-between text-[10px]">
+                          <span>{sp.method === "charge" ? `Charge (${splitChargeNames[idx] || "—"})` : sp.method.toUpperCase()}:</span>
+                          <span>{sp.amount ? formatCurrency(Number(sp.amount)) : "—"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between">
+                        <span>Payment:</span>
+                        <span>{selectedPaymentMethod.toUpperCase()}</span>
+                      </div>
+                      <div className="flex justify-between font-bold">
+                        <span>Amount Paid:</span>
+                        <span>{formatCurrency(selectedPaymentMethod === "cash" ? parseFloat(amountTendered) || finalTotal : finalTotal)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Change:</span>
+                        <span>{formatCurrency(selectedPaymentMethod === "cash" ? change : 0)}</span>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Footer */}

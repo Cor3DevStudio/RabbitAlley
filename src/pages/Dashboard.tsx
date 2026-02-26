@@ -4,13 +4,13 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { TableGrid } from "@/components/dashboard/TableGrid";
 import { api } from "@/lib/api";
-import { ShoppingBag, DollarSign, LayoutGrid, Clock } from "lucide-react";
+import { ShoppingBag, DollarSign, LayoutGrid, Clock, Wine } from "lucide-react";
 import { mapApiTable } from "@/types/pos";
 import type { Table } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<{ todaysOrders: number; todaysSales: number; openTables: number; pendingOrders: number } | null>(null);
+  const [stats, setStats] = useState<{ todaysOrders: number; todaysSales: number; todaysLdSales: number; openTables: number; pendingOrders: number } | null>(null);
   const [tables, setTables] = useState<Table[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,14 +52,14 @@ export default function Dashboard() {
       />
 
       {loading ? (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          {[1, 2, 3, 4].map((i) => (
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+          {[1, 2, 3, 4, 5].map((i) => (
             <div key={i} className="h-24 rounded-lg bg-muted animate-pulse" />
           ))}
         </div>
       ) : stats ? (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
             <StatCard
               label="Today's Orders"
               value={stats.todaysOrders}
@@ -71,6 +71,11 @@ export default function Dashboard() {
               value={formatCurrency(stats.todaysSales)}
               icon={<DollarSign className="w-5 h-5" />}
               trend={{ value: 8, isPositive: true }}
+            />
+            <StatCard
+              label="Total LD"
+              value={formatCurrency(stats.todaysLdSales ?? 0)}
+              icon={<Wine className="w-5 h-5" />}
             />
             <StatCard
               label="Open Tables"

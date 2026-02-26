@@ -52,6 +52,7 @@ const emptyProduct = (): ProductForm => ({
   name: "",
   description: "",
   category: "General",
+  sub_category: "",
   department: "Bar",
   price: 0,
   cost: 0,
@@ -85,6 +86,7 @@ export default function Products() {
           name: p.name,
           description: p.description ?? "",
           category: p.category,
+          sub_category: (p as { sub_category?: string }).sub_category ?? "",
           department: p.department,
           price: Number(p.price),
           cost: Number(p.cost),
@@ -107,6 +109,10 @@ export default function Products() {
   const categoryOptions = useMemo(
     () => [...new Set(products.map((p) => p.category).filter(Boolean))].sort(),
     [products]
+  );
+  const subCategoryOptions = useMemo(
+    () => [...new Set(products.filter((p) => p.category === form.category).map((p) => (p as Product & { sub_category?: string }).sub_category).filter(Boolean))].sort() as string[],
+    [products, form.category]
   );
 
   const filteredProducts = useMemo(
@@ -135,6 +141,7 @@ export default function Products() {
       name: product.name,
       description: product.description ?? "",
       category: product.category,
+      sub_category: product.sub_category ?? "",
       department: product.department,
       price: product.price,
       cost: product.cost,
@@ -161,7 +168,7 @@ export default function Products() {
       if (form.pricesByArea?.Lounge !== "" && form.pricesByArea?.Lounge != null) pricesByArea.Lounge = Number(form.pricesByArea.Lounge);
       if (form.pricesByArea?.Club !== "" && form.pricesByArea?.Club != null) pricesByArea.Club = Number(form.pricesByArea.Club);
       if (form.pricesByArea?.LD !== "" && form.pricesByArea?.LD != null) pricesByArea.LD = Number(form.pricesByArea.LD);
-      await api.products.create({ ...form, pricesByArea: Object.keys(pricesByArea).length ? pricesByArea : undefined });
+      await api.products.create({ ...form, sub_category: form.sub_category?.trim() || undefined, pricesByArea: Object.keys(pricesByArea).length ? pricesByArea : undefined });
       setAddOpen(false);
       setForm(emptyProduct());
       toast.success("Product added");
@@ -182,7 +189,7 @@ export default function Products() {
       if (form.pricesByArea?.Lounge !== "" && form.pricesByArea?.Lounge != null) pricesByArea.Lounge = Number(form.pricesByArea.Lounge);
       if (form.pricesByArea?.Club !== "" && form.pricesByArea?.Club != null) pricesByArea.Club = Number(form.pricesByArea.Club);
       if (form.pricesByArea?.LD !== "" && form.pricesByArea?.LD != null) pricesByArea.LD = Number(form.pricesByArea.LD);
-      await api.products.update(editingProduct.id, { ...form, pricesByArea });
+      await api.products.update(editingProduct.id, { ...form, sub_category: form.sub_category?.trim() || undefined, pricesByArea });
       setEditOpen(false);
       setEditingProduct(null);
       setForm(emptyProduct());
@@ -251,17 +258,33 @@ export default function Products() {
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label htmlFor="category">Category</Label>
-          <p className="text-xs text-muted-foreground">Choose existing or type a new category</p>
+          <p className="text-xs text-muted-foreground">Choose existing or type a new category (e.g. Chickenjoy)</p>
           <Input
             id="category"
             list="product-category-options"
             value={form.category}
             onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-            placeholder="e.g. Beers, Seafood, LD"
+            placeholder="e.g. Beers, Chickenjoy, LD"
           />
           <datalist id="product-category-options">
             {categoryOptions.map((c) => (
               <option key={c} value={c} />
+            ))}
+          </datalist>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="sub_category">Sub-category (optional)</Label>
+          <p className="text-xs text-muted-foreground">Options under this category (e.g. 1pc, 2pc, Gravy, Spicy)</p>
+          <Input
+            id="sub_category"
+            list="product-subcategory-options"
+            value={form.sub_category ?? ""}
+            onChange={(e) => setForm((f) => ({ ...f, sub_category: e.target.value }))}
+            placeholder="e.g. 1pc, 2pc, Gravy"
+          />
+          <datalist id="product-subcategory-options">
+            {subCategoryOptions.map((s) => (
+              <option key={s} value={s} />
             ))}
           </datalist>
         </div>
@@ -278,7 +301,7 @@ export default function Products() {
           </Select>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label htmlFor="price">Base price (₱)</Label>
           <p className="text-xs text-muted-foreground">Default price; used when no area override</p>
@@ -300,17 +323,6 @@ export default function Products() {
             step={0.01}
             value={form.cost || ""}
             onChange={(e) => setForm((f) => ({ ...f, cost: Number(e.target.value) || 0 }))}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="commission">Commission (₱)</Label>
-          <Input
-            id="commission"
-            type="number"
-            min={0}
-            step={0.01}
-            value={form.commission || ""}
-            onChange={(e) => setForm((f) => ({ ...f, commission: Number(e.target.value) || 0 }))}
           />
         </div>
       </div>
@@ -429,15 +441,14 @@ export default function Products() {
               <TableHead>Department</TableHead>
               <TableHead className="text-right">Price</TableHead>
               <TableHead className="text-right">Cost</TableHead>
-              <TableHead className="text-right">Commission</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="w-[80px]">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow>
-                <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                <TableRow>
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                   Loading…
                 </TableCell>
               </TableRow>
@@ -450,7 +461,6 @@ export default function Products() {
                   <TableCell>{product.department}</TableCell>
                   <TableCell className="text-right">{formatCurrency(product.price)}</TableCell>
                   <TableCell className="text-right text-muted-foreground">{formatCurrency(product.cost)}</TableCell>
-                  <TableCell className="text-right">{formatCurrency(product.commission)}</TableCell>
                   <TableCell>
                     <Badge variant={product.status === "active" ? "default" : "secondary"}>
                       {product.status}

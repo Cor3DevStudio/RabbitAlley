@@ -395,9 +395,30 @@ app.get("/api/dashboard/stats", async (req, res) => {
       "SELECT COUNT(*) AS c FROM orders WHERE branch_id = ? AND order_date = ? AND status = 'pending'",
       [branchId, today]
     );
+    let todaysLdSales = 0;
+    try {
+      const [ldRows] = await db.execute(
+        `SELECT COALESCE(SUM(oi.subtotal), 0) AS s FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         WHERE o.branch_id = ? AND o.order_date = ? AND o.status = 'paid'
+           AND oi.department = 'LD' AND COALESCE(oi.is_voided, 0) = 0`,
+        [branchId, today]
+      );
+      todaysLdSales = Number(ldRows[0]?.s ?? 0);
+    } catch (_) {
+      // is_voided column may not exist on older DBs
+      const [ldRows] = await db.execute(
+        `SELECT COALESCE(SUM(oi.subtotal), 0) AS s FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         WHERE o.branch_id = ? AND o.order_date = ? AND o.status = 'paid' AND oi.department = 'LD'`,
+        [branchId, today]
+      );
+      todaysLdSales = Number(ldRows[0]?.s ?? 0);
+    }
     res.json({
       todaysOrders: Number(ordersCount[0]?.c ?? 0),
       todaysSales: Number(salesSum[0]?.s ?? 0),
+      todaysLdSales,
       openTables: Number(openTables[0]?.c ?? 0),
       pendingOrders: Number(pendingOrders[0]?.c ?? 0),
     });
@@ -511,13 +532,24 @@ app.post("/api/orders", async (req, res) => {
     );
     const orderId = orderResult.insertId;
     
+    const specialReq = (item) => (item.specialRequest && String(item.specialRequest).trim()) || null;
     for (const item of items) {
       const servedBy = item.servedBy ? parseInt(item.servedBy, 10) : null;
-      await db.execute(
-        `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, discount, subtotal, department, sent_to_dept, is_complimentary, served_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-        [orderId, item.productId || null, item.name, item.quantity, item.unitPrice, item.discount || 0, item.subtotal, item.department || 'Bar', item.isComplimentary ? 1 : 0, servedBy]
-      );
+      try {
+        await db.execute(
+          `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, discount, subtotal, department, sent_to_dept, is_complimentary, served_by, special_request)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+          [orderId, item.productId || null, item.name, item.quantity, item.unitPrice, item.discount || 0, item.subtotal, item.department || 'Bar', item.isComplimentary ? 1 : 0, servedBy, specialReq(item)]
+        );
+      } catch (e) {
+        if (e.code === "ER_BAD_FIELD_ERROR") {
+          await db.execute(
+            `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, discount, subtotal, department, sent_to_dept, is_complimentary, served_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+            [orderId, item.productId || null, item.name, item.quantity, item.unitPrice, item.discount || 0, item.subtotal, item.department || 'Bar', item.isComplimentary ? 1 : 0, servedBy]
+          );
+        } else throw e;
+      }
     }
     
     await db.execute(
@@ -574,11 +606,22 @@ app.post("/api/orders/:id/items", async (req, res) => {
         );
         newSubtotal += delta;
       } else {
-        await db.execute(
-          `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, discount, subtotal, department, sent_to_dept, is_complimentary, served_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-          [id, productId, item.name || "Item", qty, unitPrice, discount, subtotal, dept, item.isComplimentary ? 1 : 0, servedByVal]
-        );
+        const specReq = (item.specialRequest && String(item.specialRequest).trim()) || null;
+        try {
+          await db.execute(
+            `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, discount, subtotal, department, sent_to_dept, is_complimentary, served_by, special_request)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+            [id, productId, item.name || "Item", qty, unitPrice, discount, subtotal, dept, item.isComplimentary ? 1 : 0, servedByVal, specReq]
+          );
+        } catch (e) {
+          if (e.code === "ER_BAD_FIELD_ERROR") {
+            await db.execute(
+              `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, discount, subtotal, department, sent_to_dept, is_complimentary, served_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+              [id, productId, item.name || "Item", qty, unitPrice, discount, subtotal, dept, item.isComplimentary ? 1 : 0, servedByVal]
+            );
+          } else throw e;
+        }
         newSubtotal += subtotal;
       }
     }
@@ -603,20 +646,41 @@ app.get("/api/orders/table/:tableId", async (req, res) => {
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
-    const [orders] = await db.execute(
-      "SELECT id, table_id, status, subtotal, discount, tax, total, employee_id, order_date FROM orders WHERE table_id = ? AND status = 'pending' AND branch_id = ? ORDER BY id",
-      [tableId, branchId]
-    );
+    let orders;
+    try {
+      [orders] = await db.execute(
+        "SELECT id, table_id, status, subtotal, discount, tax, total, employee_id, order_date, voided_at, voided_by, voided_by_name FROM orders WHERE table_id = ? AND status = 'pending' AND branch_id = ? ORDER BY id",
+        [tableId, branchId]
+      );
+    } catch (e) {
+      if (e.code === "ER_BAD_FIELD_ERROR") {
+        [orders] = await db.execute(
+          "SELECT id, table_id, status, subtotal, discount, tax, total, employee_id, order_date FROM orders WHERE table_id = ? AND status = 'pending' AND branch_id = ? ORDER BY id",
+          [tableId, branchId]
+        );
+      } else throw e;
+    }
     if (!orders.length) {
       return res.json({ orders: [], tableStatus: "available" });
     }
     const orderList = [];
     for (const o of orders) {
-      const [items] = await db.execute(
-        `SELECT oi.id, oi.product_id, oi.product_name, oi.quantity, oi.unit_price, oi.discount, oi.subtotal, oi.department, oi.sent_to_dept, oi.is_complimentary, oi.served_by, u.name AS served_by_name
-         FROM order_items oi LEFT JOIN users u ON u.id = oi.served_by WHERE oi.order_id = ?`,
-        [o.id]
-      );
+      let items;
+      try {
+        [items] = await db.execute(
+          `SELECT oi.id, oi.product_id, oi.product_name, oi.quantity, oi.unit_price, oi.discount, oi.subtotal, oi.department, oi.sent_to_dept, oi.is_complimentary, oi.served_by, oi.special_request, oi.is_voided, oi.voided_by_name, u.name AS served_by_name
+           FROM order_items oi LEFT JOIN users u ON u.id = oi.served_by WHERE oi.order_id = ?`,
+          [o.id]
+        );
+      } catch (e) {
+        if (e.code === "ER_BAD_FIELD_ERROR") {
+          [items] = await db.execute(
+            `SELECT oi.id, oi.product_id, oi.product_name, oi.quantity, oi.unit_price, oi.discount, oi.subtotal, oi.department, oi.sent_to_dept, oi.is_complimentary, oi.served_by, u.name AS served_by_name
+             FROM order_items oi LEFT JOIN users u ON u.id = oi.served_by WHERE oi.order_id = ?`,
+            [o.id]
+          );
+        } else throw e;
+      }
       orderList.push({
         id: String(o.id),
         tableId: o.table_id,
@@ -627,7 +691,11 @@ app.get("/api/orders/table/:tableId", async (req, res) => {
         total: Number(o.total),
         employeeId: o.employee_id,
         orderDate: o.order_date,
+        voidedAt: o.voided_at || null,
+        voidedBy: o.voided_by != null ? String(o.voided_by) : null,
+        voidedByName: o.voided_by_name || null,
         items: items.map((i) => ({
+          id: String(i.id),
           productId: String(i.product_id || i.id),
           name: i.product_name,
           quantity: i.quantity,
@@ -639,6 +707,9 @@ app.get("/api/orders/table/:tableId", async (req, res) => {
           isComplimentary: !!i.is_complimentary,
           servedBy: i.served_by ? String(i.served_by) : null,
           servedByName: i.served_by_name || null,
+          specialRequest: i.special_request || null,
+          isVoided: !!i.is_voided,
+          voidedByName: i.voided_by_name || null,
         })),
       });
     }
@@ -646,6 +717,105 @@ app.get("/api/orders/table/:tableId", async (req, res) => {
   } catch (err) {
     console.error("Get order error:", err);
     res.status(500).json({ error: "Failed to get order" });
+  }
+});
+
+// Helper: verify manager (approve_discounts) and return { id, name }
+async function verifyManagerForVoid(db, employeeId, password) {
+  if (!employeeId || !password) throw new Error("Employee ID and password are required");
+  const [rows] = await db.execute(
+    `SELECT u.id, u.employee_id, u.name, u.password_hash, u.role_id
+     FROM users u JOIN roles r ON r.id = u.role_id
+     WHERE u.employee_id = ? AND u.active = 1 AND r.guard = 'web'`,
+    [String(employeeId).trim().toUpperCase()]
+  );
+  if (rows.length === 0) throw new Error("Invalid Employee ID or Password");
+  const user = rows[0];
+  const valid = await bcrypt.compare(password, user.password_hash);
+  if (!valid) throw new Error("Invalid Employee ID or Password");
+  const [permRows] = await db.execute(
+    `SELECT p.name FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = ?`,
+    [user.role_id]
+  );
+  const permissions = permRows.map((r) => r.name);
+  if (!permissions.includes("approve_discounts")) throw new Error("Only a Manager can authorize void");
+  return { id: user.id, name: user.name };
+}
+
+// Void entire order (manager auth required)
+app.post("/api/orders/:id/void", async (req, res) => {
+  const orderId = req.params.id;
+  const branchId = getBranchId(req);
+  const { employeeId, password, reason } = req.body || {};
+  try {
+    const db = await getPool();
+    const manager = await verifyManagerForVoid(db, employeeId, password);
+    const [orders] = await db.execute("SELECT id, branch_id, status FROM orders WHERE id = ?", [orderId]);
+    if (!orders.length) return res.status(404).json({ error: "Order not found" });
+    if (String(orders[0].branch_id) !== branchId) return res.status(403).json({ error: "Order belongs to another branch" });
+    if (orders[0].status === "paid") return res.status(400).json({ error: "Cannot void paid order" });
+    try {
+      await db.execute(
+        "UPDATE orders SET voided_at = NOW(), voided_by = ?, voided_by_name = ? WHERE id = ?",
+        [manager.id, manager.name, orderId]
+      );
+      await db.execute(
+        "UPDATE order_items SET is_voided = 1, voided_by = ?, voided_at = NOW(), voided_by_name = ? WHERE order_id = ?",
+        [manager.id, manager.name, orderId]
+      );
+    } catch (e) {
+      if (e.code === "ER_BAD_FIELD_ERROR") return res.status(500).json({ error: "Void not supported: run schema migration for void columns" });
+      throw e;
+    }
+    res.json({ ok: true, voidedByName: manager.name });
+  } catch (err) {
+    if (err.message && (err.message.includes("Employee ID") || err.message.includes("Password") || err.message.includes("Manager"))) {
+      return res.status(401).json({ error: err.message });
+    }
+    console.error("Order void error:", err);
+    res.status(500).json({ error: "Failed to void order" });
+  }
+});
+
+// Void single order item (manager auth required)
+app.patch("/api/order-items/:id/void", async (req, res) => {
+  const itemId = req.params.id;
+  const branchId = getBranchId(req);
+  const { employeeId, password } = req.body || {};
+  try {
+    const db = await getPool();
+    const manager = await verifyManagerForVoid(db, employeeId, password);
+    const [items] = await db.execute(
+      "SELECT oi.id, oi.order_id, o.subtotal FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id = ? AND o.branch_id = ?",
+      [itemId, branchId]
+    );
+    if (!items.length) return res.status(404).json({ error: "Item not found" });
+    try {
+      await db.execute(
+        "UPDATE order_items SET is_voided = 1, voided_by = ?, voided_at = NOW(), voided_by_name = ? WHERE id = ?",
+        [manager.id, manager.name, itemId]
+      );
+      const orderId = items[0].order_id;
+      const [sumRows] = await db.execute(
+        "SELECT COALESCE(SUM(CASE WHEN is_voided = 0 THEN subtotal ELSE 0 END), 0) AS subtotal FROM order_items WHERE order_id = ?",
+        [orderId]
+      );
+      const newSubtotal = Number(sumRows[0]?.subtotal ?? 0);
+      const newTax = newSubtotal * 0.12;
+      const newService = newSubtotal * 0.1;
+      const newTotal = newSubtotal + newTax + newService;
+      await db.execute("UPDATE orders SET subtotal = ?, tax = ?, total = ? WHERE id = ?", [newSubtotal, newTax, newTotal, orderId]);
+    } catch (e) {
+      if (e.code === "ER_BAD_FIELD_ERROR") return res.status(500).json({ error: "Void not supported: run schema migration for void columns" });
+      throw e;
+    }
+    res.json({ ok: true, voidedByName: manager.name });
+  } catch (err) {
+    if (err.message && (err.message.includes("Employee ID") || err.message.includes("Password") || err.message.includes("Manager"))) {
+      return res.status(401).json({ error: err.message });
+    }
+    console.error("Item void error:", err);
+    res.status(500).json({ error: "Failed to void item" });
   }
 });
 
@@ -682,7 +852,7 @@ app.patch("/api/orders/:id/pay", async (req, res) => {
 app.post("/api/tables/:tableId/pay-all", async (req, res) => {
   const { tableId } = req.params;
   const branchId = getBranchId(req);
-  const { paymentMethod, discountName, discountAmount, customerName } = req.body || {};
+  const { paymentMethod, discountName, discountAmount, customerName, splits } = req.body || {};
   try {
     const db = await getPool();
     const [pending] = await db.execute(
@@ -690,8 +860,12 @@ app.post("/api/tables/:tableId/pay-all", async (req, res) => {
       [tableId, branchId]
     );
     if (!pending.length) return res.status(400).json({ error: "No pending orders for this table" });
-    const paymentMethodVal = paymentMethod || "cash";
-    if (paymentMethodVal === "charge") {
+
+    // Split payment: at least 2 entries provided
+    const isSplitPayment = Array.isArray(splits) && splits.length >= 2;
+    const paymentMethodVal = isSplitPayment ? "split_payment" : (paymentMethod || "cash");
+
+    if (!isSplitPayment && paymentMethodVal === "charge") {
       const name = String(customerName || "").trim();
       if (!name) return res.status(400).json({ error: "Customer name is required for Charge/Utang" });
     }
@@ -707,19 +881,49 @@ app.post("/api/tables/:tableId/pay-all", async (req, res) => {
     const combinedDiscount = pending.reduce((s, o) => s + Number(o.discount), 0);
     const combinedTax = pending.reduce((s, o) => s + Number(o.tax), 0);
     const combinedTotal = pending.reduce((s, o) => s + Number(o.total), 0);
-    if (paymentMethodVal === "charge") {
+
+    // Handle split payment records
+    if (isSplitPayment) {
+      const primaryOrderId = pending[0].id;
+      try {
+        await db.execute(`DELETE FROM split_payments WHERE order_id = ?`, [primaryOrderId]);
+        for (let i = 0; i < splits.length; i++) {
+          await db.execute(
+            `INSERT INTO split_payments (order_id, split_number, amount, payment_method, status) VALUES (?, ?, ?, ?, 'paid')`,
+            [primaryOrderId, i + 1, splits[i].amount, splits[i].paymentMethod]
+          );
+        }
+      } catch (_splitErr) {
+        // split_payments table may not exist — non-fatal
+      }
+      // Handle charge entries within split
+      const chargeSplits = splits.filter((s) => s.paymentMethod === "charge" && String(s.customerName || "").trim());
+      for (const cs of chargeSplits) {
+        try {
+          const [r] = await db.execute(
+            `INSERT INTO charge_transactions (branch_id, order_ids, customer_name, amount, status, charged_by) VALUES (?, ?, ?, ?, 'pending', ?)`,
+            [branchId, pending.map((o) => o.id).join(","), String(cs.customerName).trim(), cs.amount, userName || employeeId || null]
+          );
+          logAudit(req, "charge_create", "charge", String(r.insertId), { customerName: String(cs.customerName).trim(), amount: cs.amount, orderIds: pending.map((o) => String(o.id)) });
+        } catch (_chargeErr) {
+          // charge_transactions table may not exist — non-fatal
+        }
+      }
+    } else if (paymentMethodVal === "charge") {
       const [r] = await db.execute(
         `INSERT INTO charge_transactions (branch_id, order_ids, customer_name, amount, status, charged_by) VALUES (?, ?, ?, ?, 'pending', ?)`,
         [branchId, pending.map((o) => o.id).join(","), String(customerName).trim(), combinedTotal, userName || employeeId || null]
       );
       logAudit(req, "charge_create", "charge", String(r.insertId), { customerName: String(customerName).trim(), amount: combinedTotal, orderIds: pending.map((o) => String(o.id)) });
     }
+
     const auditDetails = { orderIds: pending.map((o) => String(o.id)), paymentMethod: paymentMethodVal, total: combinedTotal };
     if (discountName || (discountAmount != null && Number(discountAmount) > 0)) {
       auditDetails.discountName = discountName || null;
       auditDetails.discountAmount = Number(discountAmount) || combinedDiscount;
     }
     if (paymentMethodVal === "charge") auditDetails.customerName = String(customerName).trim();
+    if (isSplitPayment) auditDetails.splits = splits;
     logAudit(req, "table_pay_all", "table", tableId, auditDetails);
     res.json({
       ok: true,
@@ -972,7 +1176,7 @@ app.get("/api/products", async (req, res) => {
   try {
     const db = await getPool();
     const { search, category, department, status, limit, area } = req.query;
-    let sql = "SELECT id, sku, name, description, category, department, price, cost, commission, status FROM products WHERE 1=1";
+    let sql = "SELECT id, sku, name, description, category, COALESCE(sub_category, '') AS sub_category, department, price, cost, commission, status FROM products WHERE 1=1";
     const params = [];
     if (search) {
       sql += " AND (name LIKE ? OR sku LIKE ?)";
@@ -1007,6 +1211,7 @@ app.get("/api/products", async (req, res) => {
         ...r,
         id: String(r.id),
         description: r.description ?? "",
+        sub_category: r.sub_category ?? "",
         price: resolvedPrice,
         cost: Number(r.cost),
         commission: Number(r.commission),
@@ -1016,7 +1221,7 @@ app.get("/api/products", async (req, res) => {
     res.json(out);
   } catch (err) {
     if (err.code === "ER_BAD_FIELD_ERROR" || err.code === "ER_NO_SUCH_TABLE") {
-      // product_area_prices table may not exist yet (migration not run)
+      // product_area_prices or sub_category may not exist yet (migration not run)
       const db = await getPool();
       const { search, category, department, status, limit, area } = req.query;
       let sql = "SELECT id, sku, name, description, category, department, price, cost, commission, status FROM products WHERE 1=1";
@@ -1029,7 +1234,7 @@ app.get("/api/products", async (req, res) => {
       if (limit) { sql += " LIMIT ?"; params.push(Number(limit)); }
       const [rows] = await db.execute(sql, params);
       return res.json(rows.map((r) => ({
-        ...r, id: String(r.id), description: r.description ?? "", price: Number(r.price), cost: Number(r.cost), commission: Number(r.commission),
+        ...r, id: String(r.id), description: r.description ?? "", sub_category: "", price: Number(r.price), cost: Number(r.cost), commission: Number(r.commission),
         pricesByArea: {},
       })));
     }
@@ -1039,16 +1244,28 @@ app.get("/api/products", async (req, res) => {
 });
 
 app.post("/api/products", async (req, res) => {
-  const { sku, name, description, category, department, price, cost, commission, status, pricesByArea } = req.body || {};
+  const { sku, name, description, category, sub_category, department, price, cost, commission, status, pricesByArea } = req.body || {};
   if (!sku?.trim() || !name?.trim()) return res.status(400).json({ error: "SKU and name required" });
   try {
     const db = await getPool();
-    const [r] = await db.execute(
-      `INSERT INTO products (sku, name, description, category, department, price, cost, commission, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [String(sku).trim(), String(name).trim(), description?.trim() || null, category || "Beer", department || "Bar", Number(price) || 0, Number(cost) || 0, Number(commission) || 0, status || "active"]
-    );
-    const newId = r.insertId;
+    let newId;
+    try {
+      const [r] = await db.execute(
+        `INSERT INTO products (sku, name, description, category, sub_category, department, price, cost, commission, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [String(sku).trim(), String(name).trim(), description?.trim() || null, category || "Beer", (sub_category && String(sub_category).trim()) || null, department || "Bar", Number(price) || 0, Number(cost) || 0, Number(commission) || 0, status || "active"]
+      );
+      newId = r.insertId;
+    } catch (colErr) {
+      if (colErr.code === "ER_BAD_FIELD_ERROR") {
+        const [r] = await db.execute(
+          `INSERT INTO products (sku, name, description, category, department, price, cost, commission, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [String(sku).trim(), String(name).trim(), description?.trim() || null, category || "Beer", department || "Bar", Number(price) || 0, Number(cost) || 0, Number(commission) || 0, status || "active"]
+        );
+        newId = r.insertId;
+      } else throw colErr;
+    }
     if (pricesByArea && typeof pricesByArea === "object" && [].concat(Object.keys(pricesByArea)).some((k) => ["Lounge", "Club", "LD"].includes(k))) {
       try {
         for (const area of ["Lounge", "Club", "LD"]) {
@@ -1061,10 +1278,22 @@ app.post("/api/products", async (req, res) => {
         }
       } catch (_) { /* table may not exist */ }
     }
-    const [rows] = await db.execute("SELECT id, sku, name, description, category, department, price, cost, commission, status FROM products WHERE id = ?", [newId]);
+    let rows;
+    try {
+      [rows] = await db.execute("SELECT id, sku, name, description, category, sub_category, department, price, cost, commission, status FROM products WHERE id = ?", [newId]);
+    } catch (e) {
+      if (e.code === "ER_BAD_FIELD_ERROR") {
+        [rows] = await db.execute("SELECT id, sku, name, description, category, department, price, cost, commission, status FROM products WHERE id = ?", [newId]);
+      } else throw e;
+    }
     const p = rows[0];
+    let savedPricesByArea = { Lounge: undefined, Club: undefined, LD: undefined };
+    try {
+      const [apRows] = await db.execute("SELECT area, price FROM product_area_prices WHERE product_id = ?", [newId]);
+      apRows.forEach((row) => { savedPricesByArea[row.area] = Number(row.price); });
+    } catch (_) { /* table may not exist */ }
     logAudit(req, "product_create", "product", String(p.id), { sku: p.sku, name: p.name });
-    res.status(201).json({ id: String(p.id), ...p, price: Number(p.price), cost: Number(p.cost), commission: Number(p.commission), pricesByArea: pricesByArea || {} });
+    res.status(201).json({ id: String(p.id), ...p, sub_category: p.sub_category ?? "", price: Number(p.price), cost: Number(p.cost), commission: Number(p.commission), pricesByArea: savedPricesByArea });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") return res.status(400).json({ error: "SKU already exists" });
     console.error("Product create error:", err);
@@ -1074,14 +1303,23 @@ app.post("/api/products", async (req, res) => {
 
 app.put("/api/products/:id", async (req, res) => {
   const id = req.params.id;
-  const { sku, name, description, category, department, price, cost, commission, status, pricesByArea } = req.body || {};
+  const { sku, name, description, category, sub_category, department, price, cost, commission, status, pricesByArea } = req.body || {};
   if (!sku?.trim() || !name?.trim()) return res.status(400).json({ error: "SKU and name required" });
   try {
     const db = await getPool();
-    await db.execute(
-      `UPDATE products SET sku=?, name=?, description=?, category=?, department=?, price=?, cost=?, commission=?, status=? WHERE id = ?`,
-      [String(sku).trim(), String(name).trim(), description?.trim() || null, category || "Beer", department || "Bar", Number(price) || 0, Number(cost) || 0, Number(commission) || 0, status || "active", id]
-    );
+    try {
+      await db.execute(
+        `UPDATE products SET sku=?, name=?, description=?, category=?, sub_category=?, department=?, price=?, cost=?, commission=?, status=? WHERE id = ?`,
+        [String(sku).trim(), String(name).trim(), description?.trim() || null, category || "Beer", (sub_category && String(sub_category).trim()) || null, department || "Bar", Number(price) || 0, Number(cost) || 0, Number(commission) || 0, status || "active", id]
+      );
+    } catch (colErr) {
+      if (colErr.code === "ER_BAD_FIELD_ERROR") {
+        await db.execute(
+          `UPDATE products SET sku=?, name=?, description=?, category=?, department=?, price=?, cost=?, commission=?, status=? WHERE id = ?`,
+          [String(sku).trim(), String(name).trim(), description?.trim() || null, category || "Beer", department || "Bar", Number(price) || 0, Number(cost) || 0, Number(commission) || 0, status || "active", id]
+        );
+      } else throw colErr;
+    }
     if (pricesByArea && typeof pricesByArea === "object") {
       try {
         await db.execute("DELETE FROM product_area_prices WHERE product_id = ?", [id]);
@@ -1095,11 +1333,24 @@ app.put("/api/products/:id", async (req, res) => {
         }
       } catch (_) { /* table may not exist */ }
     }
-    const [rows] = await db.execute("SELECT id, sku, name, description, category, department, price, cost, commission, status FROM products WHERE id = ?", [id]);
+    let rows;
+    try {
+      [rows] = await db.execute("SELECT id, sku, name, description, category, sub_category, department, price, cost, commission, status FROM products WHERE id = ?", [id]);
+    } catch (e) {
+      if (e.code === "ER_BAD_FIELD_ERROR") {
+        [rows] = await db.execute("SELECT id, sku, name, description, category, department, price, cost, commission, status FROM products WHERE id = ?", [id]);
+      } else throw e;
+    }
     if (rows.length === 0) return res.status(404).json({ error: "Product not found" });
     const p = rows[0];
+    // Re-read pricesByArea from DB so response reflects what was saved
+    let savedPricesByArea = { Lounge: undefined, Club: undefined, LD: undefined };
+    try {
+      const [apRows] = await db.execute("SELECT area, price FROM product_area_prices WHERE product_id = ?", [id]);
+      apRows.forEach((row) => { savedPricesByArea[row.area] = Number(row.price); });
+    } catch (_) { /* table may not exist */ }
     logAudit(req, "product_update", "product", id, { sku: p.sku, name: p.name });
-    res.json({ id: String(p.id), ...p, price: Number(p.price), cost: Number(p.cost), commission: Number(p.commission), pricesByArea: pricesByArea || {} });
+    res.json({ id: String(p.id), ...p, sub_category: p.sub_category ?? "", price: Number(p.price), cost: Number(p.cost), commission: Number(p.commission), pricesByArea: savedPricesByArea });
   } catch (err) {
     console.error("Product update error:", err);
     res.status(500).json({ error: "Failed to update product" });
@@ -1126,9 +1377,10 @@ app.get("/api/staff/ld-ladies", async (req, res) => {
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
+    // Return ALL active staff as available ladies for LD orders
     const [rows] = await db.execute(
       `SELECT u.id, u.employee_id AS code, u.name, u.nickname
-       FROM users u WHERE u.branch_id = ? AND u.active = 1 AND u.incentive_rate > 0 ORDER BY u.name`,
+       FROM users u WHERE u.branch_id = ? AND u.active = 1 ORDER BY u.name`,
       [branchId]
     );
     res.json(rows.map((r) => ({
@@ -1570,6 +1822,33 @@ app.get("/api/reports/payroll", async (req, res) => {
       if (!v) return null;
       try { return Array.isArray(typeof v === "string" ? JSON.parse(v) : v) ? (typeof v === "string" ? JSON.parse(v) : v) : null; } catch (_) { return null; }
     };
+    // Get LD drink count per staff for this period
+    const [ldCountRows] = await db.execute(
+      `SELECT oi.served_by AS userId, COUNT(oi.id) AS ldCount
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid' AND COALESCE(oi.is_voided,0) = 0
+       GROUP BY oi.served_by`,
+      [branchId, fromDate, toDate]
+    ).catch(() => [[]]);
+    const ldCountMap = {};
+    for (const r of (ldCountRows || [])) {
+      if (r.userId) ldCountMap[String(r.userId)] = Number(r.ldCount || 0);
+    }
+    const userIds = rows.map((r) => r.userId).filter(Boolean);
+    let timeInMap = {};
+    if (userIds.length > 0) {
+      const placeholders = userIds.map(() => "?").join(",");
+      const [attRows] = await db.execute(
+        `SELECT user_id AS userId, MIN(time_in) AS timeIn FROM attendance
+         WHERE work_date BETWEEN ? AND ? AND user_id IN (${placeholders}) GROUP BY user_id`,
+        [fromDate, toDate, ...userIds]
+      ).catch(() => []);
+      for (const a of (attRows || [])) {
+        if (a.userId) timeInMap[String(a.userId)] = a.timeIn;
+      }
+    }
     const mapRow = (r) => {
       const incB = parseBreakdown(r.incentives_breakdown);
       const adjB = parseBreakdown(r.adjustments_breakdown);
@@ -1577,26 +1856,31 @@ app.get("/api/reports/payroll", async (req, res) => {
       const budget = Number(r.allowance ?? 0);
       const commission = Number(r.commission ?? 0);
       const incentives = Number(r.incentives ?? 0);
+      const otherIncentives = Array.isArray(incB) ? incB.reduce((s, x) => s + Number(x.amount || 0), 0) : 0;
       const adjustments = Number(r.adjustments ?? 0);
       const deductions = Number(r.deductions ?? 0);
+      const netPayout = budget + commission + incentives + otherIncentives + adjustments - deductions;
+      const timeIn = timeInMap[String(r.userId)];
       return {
         id: String(r.id),
         userId: String(r.userId),
         employeeId: r.employeeId,
         name: r.name,
+        timeIn: timeIn ? new Date(timeIn).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", hour12: true }) : null,
         defaultAllowance: Number(r.defaultAllowance ?? 0),
         perHour: 0,
         allowance: budget,
         hours: 0,
         commission,
+        ldCount: ldCountMap[String(r.userId)] ?? 0,
         incentives,
         adjustments,
         deductions,
         incentivesBreakdown: incB,
         adjustmentsBreakdown: adjB,
         deductionsBreakdown: dedB,
-        total: Number(r.total ?? budget + commission + incentives),
-        netPayout: budget + commission + incentives + adjustments - deductions,
+        total: Number(r.total ?? 0),
+        netPayout,
         status: r.status,
         approvedBy: r.approvedBy || null,
       };
@@ -1639,14 +1923,16 @@ app.patch("/api/reports/payroll/:id", async (req, res) => {
     const db = await getPool();
     const updates = [];
     const params = [];
-    let incVal = incentives;
     let adjVal = adjustments;
     let dedVal = deductions;
     if (Array.isArray(incentivesBreakdown)) {
       const sanitized = incentivesBreakdown.filter((x) => x && typeof x.title === "string" && typeof x.amount === "number").map((x) => ({ title: String(x.title).slice(0, 128), amount: Number(x.amount) }));
       updates.push("incentives_breakdown = ?");
       params.push(JSON.stringify(sanitized));
-      incVal = sanitized.reduce((s, x) => s + x.amount, 0);
+    }
+    if (incentives !== undefined) {
+      updates.push("incentives = ?");
+      params.push(Number(incentives) ?? 0);
     }
     if (Array.isArray(adjustmentsBreakdown)) {
       const sanitized = adjustmentsBreakdown.filter((x) => x && typeof x.title === "string" && typeof x.amount === "number").map((x) => ({ title: String(x.title).slice(0, 128), amount: Number(x.amount) }));
@@ -1660,8 +1946,6 @@ app.patch("/api/reports/payroll/:id", async (req, res) => {
       params.push(JSON.stringify(sanitized));
       dedVal = sanitized.reduce((s, x) => s + x.amount, 0);
     }
-    if (incentives !== undefined) { updates.push("incentives = ?"); params.push(Number(incentives) ?? incVal ?? 0); }
-    else if (incVal !== undefined) { updates.push("incentives = ?"); params.push(Number(incVal)); }
     if (adjustments !== undefined) { updates.push("adjustments = ?"); params.push(Number(adjustments) ?? adjVal ?? 0); }
     else if (adjVal !== undefined) { updates.push("adjustments = ?"); params.push(Number(adjVal)); }
     if (deductions !== undefined) { updates.push("deductions = ?"); params.push(Number(deductions) ?? dedVal ?? 0); }
@@ -1671,12 +1955,17 @@ app.patch("/api/reports/payroll/:id", async (req, res) => {
       await db.execute(`UPDATE payouts SET ${updates.join(", ")} WHERE id = ?`, params);
     }
     const [rows] = await db.execute(
-      "SELECT allowance, commission, incentives FROM payouts WHERE id = ?",
+      "SELECT allowance, commission, incentives, incentives_breakdown, adjustments, deductions FROM payouts WHERE id = ?",
       [id]
     );
     if (rows.length) {
       const r = rows[0];
-      const total = Number(r.allowance) + Number(r.commission) + Number(r.incentives ?? 0);
+      let otherInc = 0;
+      try {
+        const b = r.incentives_breakdown ? (typeof r.incentives_breakdown === "string" ? JSON.parse(r.incentives_breakdown) : r.incentives_breakdown) : [];
+        otherInc = Array.isArray(b) ? b.reduce((s, x) => s + Number(x.amount || 0), 0) : 0;
+      } catch (_) {}
+      const total = Number(r.allowance) + Number(r.commission) + Number(r.incentives ?? 0) + otherInc + Number(r.adjustments ?? 0) - Number(r.deductions ?? 0);
       await db.execute("UPDATE payouts SET total = ? WHERE id = ?", [total, id]);
     }
     res.json({ ok: true });
@@ -1771,6 +2060,8 @@ app.get("/api/reports/payroll/:id", async (req, res) => {
 });
 
 // Compute payouts for all staff (creates/updates payout records; scoped by branch)
+// Commission = commission_rate (staff) × this staff's total LD only
+// Incentive = incentive_rate (staff) × total LD of ALL staff (period total)
 app.post("/api/reports/payroll/compute", async (req, res) => {
   const branchId = getBranchId(req);
   const { from, to } = req.body || {};
@@ -1779,6 +2070,17 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
   
   try {
     const db = await getPool();
+    
+    // Total LD count for entire period (all staff) — used for incentive formula
+    const [totalLdRows] = await db.execute(
+      `SELECT COUNT(oi.id) AS totalLd
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid' AND COALESCE(oi.is_voided,0) = 0`,
+      [branchId, fromDate, toDate]
+    ).catch(() => [{ totalLd: 0 }]);
+    const totalLdAll = Number(totalLdRows[0]?.totalLd ?? 0);
     
     const [staffList] = await db.execute(
       `SELECT id, employee_id, name, allowance, hourly, budget, commission_rate, incentive_rate, table_incentive, has_quota, quota_amount
@@ -1789,70 +2091,50 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
     const results = [];
     
     for (const staff of staffList) {
-      // Calculate commission from orders served by this staff (order_items.served_by)
-      const [commissionRows] = await db.execute(
-        `SELECT COALESCE(SUM(oi.subtotal * ? / 100), 0) AS commission, COUNT(DISTINCT oi.id) AS ldCount
+      // Count LD drinks served by this staff only
+      const [ldRows] = await db.execute(
+        `SELECT COUNT(oi.id) AS ldCount
          FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
-         WHERE o.branch_id = ? AND oi.served_by = ? AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'`,
-        [Number(staff.commission_rate) || 0, branchId, staff.id, fromDate, toDate]
-      );
-      
-      const [tableRows] = await db.execute(
-        `SELECT COUNT(DISTINCT o.table_id) AS tablesServed
-         FROM orders o
-         WHERE o.branch_id = ? AND o.employee_id = ? AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'`,
-        [branchId, staff.employee_id, fromDate, toDate]
-      );
-      
-      const [salesRows] = await db.execute(
-        `SELECT COALESCE(SUM(oi.subtotal), 0) AS totalSales
-         FROM order_items oi
-         JOIN orders o ON o.id = oi.order_id
-         WHERE o.branch_id = ? AND oi.served_by = ? AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'`,
+         WHERE o.branch_id = ? AND oi.served_by = ? AND oi.department = 'LD'
+           AND o.order_date BETWEEN ? AND ? AND o.status = 'paid' AND COALESCE(oi.is_voided,0) = 0`,
         [branchId, staff.id, fromDate, toDate]
       );
       
-      const commission = Number(commissionRows[0]?.commission || 0);
-      const ldCount = Number(commissionRows[0]?.ldCount || 0);
-      const tablesServed = Number(tableRows[0]?.tablesServed || 0);
-      const totalSales = Number(salesRows[0]?.totalSales || 0);
+      const ldCount = Number(ldRows[0]?.ldCount || 0);
+      // Commission = commission_rate × this staff's total LD only
+      const commission = ldCount * Number(staff.commission_rate || 0);
+      // Incentive = incentive_rate × total LD of ALL staff (same period total for everyone)
+      const incentives = totalLdAll * Number(staff.incentive_rate || 0);
       
-      // Calculate incentives
-      const ldIncentive = ldCount * Number(staff.incentive_rate || 0);
-      const tableIncentive = tablesServed * Number(staff.table_incentive || 0);
-      const totalIncentives = ldIncentive + tableIncentive;
+      const budget = Number(staff.budget || 0);
       
-      // Calculate budget (apply quota rule if applicable)
-      let budget = Number(staff.budget || 0);
-      if (staff.has_quota && Number(staff.quota_amount) > 0) {
-        if (totalSales < Number(staff.quota_amount)) {
-          budget = budget / 2; // Half budget if quota not reached
-        }
-      }
-      
-      // Budget is the staff base pay term for payroll (no per-hour computation).
-      const total = budget + commission + totalIncentives;
-      
-      // Check if payout record exists for this period
       const [existing] = await db.execute(
-        `SELECT id FROM payouts WHERE user_id = ? AND period_from = ? AND period_to = ?`,
+        `SELECT id, incentives_breakdown, adjustments, deductions FROM payouts WHERE user_id = ? AND period_from = ? AND period_to = ?`,
         [staff.id, fromDate, toDate]
       );
       
+      const otherSum = (() => {
+        if (!existing.length || !existing[0].incentives_breakdown) return 0;
+        try {
+          const b = typeof existing[0].incentives_breakdown === "string" ? JSON.parse(existing[0].incentives_breakdown) : existing[0].incentives_breakdown;
+          return Array.isArray(b) ? b.reduce((s, x) => s + Number(x.amount || 0), 0) : 0;
+        } catch (_) { return 0; }
+      })();
+      const adjustments = existing.length ? Number(existing[0].adjustments ?? 0) : 0;
+      const deductions = existing.length ? Number(existing[0].deductions ?? 0) : 0;
+      const total = budget + commission + incentives + otherSum + adjustments - deductions;
+      
       if (existing.length > 0) {
-        // Update existing record
         await db.execute(
-          `UPDATE payouts SET allowance = ?, hours = ?, commission = ?, incentives = ?, total = ?, status = 'draft'
-           WHERE id = ?`,
-          [budget, 0, commission, totalIncentives, total, existing[0].id]
+          `UPDATE payouts SET allowance = ?, hours = ?, commission = ?, incentives = ?, total = ?, status = 'draft' WHERE id = ?`,
+          [budget, 0, commission, incentives, total, existing[0].id]
         );
       } else {
-        // Create new record
         await db.execute(
-          `INSERT INTO payouts (user_id, period_from, period_to, allowance, hours, commission, incentives, total, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')`,
-          [staff.id, fromDate, toDate, budget, 0, commission, totalIncentives, total]
+          `INSERT INTO payouts (user_id, period_from, period_to, allowance, hours, commission, incentives, incentives_breakdown, total, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`,
+          [staff.id, fromDate, toDate, budget, 0, commission, incentives, JSON.stringify([]), total]
         );
       }
       
@@ -1861,9 +2143,9 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
         name: staff.name,
         allowance: budget,
         commission,
-        incentives: totalIncentives,
+        ldCount,
+        incentives,
         total,
-        quotaReached: !staff.has_quota || totalSales >= Number(staff.quota_amount),
       });
     }
     

@@ -18,6 +18,8 @@ export interface Product {
   name: string;
   description?: string;
   category: string;
+  /** Optional sub-category (e.g. "1pc", "2pc", "Gravy") for fastfood-style options */
+  sub_category?: string;
   /** "Bar" | "Kitchen" | "LD" */
   department: string;
   price: number;

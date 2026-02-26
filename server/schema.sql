@@ -100,12 +100,14 @@ CREATE TABLE IF NOT EXISTS pos_tables (
 );
 
 -- Products (with optimized indexes for fast lookups)
+-- sub_category: optional (e.g. "1pc", "2pc", "Gravy") for fastfood-style options under a category
 CREATE TABLE IF NOT EXISTS products (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   sku VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
   description VARCHAR(512) DEFAULT NULL,
   category VARCHAR(64) NOT NULL,
+  sub_category VARCHAR(64) DEFAULT NULL,
   department VARCHAR(32) NOT NULL,
   price DECIMAL(10,2) NOT NULL DEFAULT 0,
   cost DECIMAL(10,2) NOT NULL DEFAULT 0,
@@ -115,6 +117,7 @@ CREATE TABLE IF NOT EXISTS products (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_products_sku (sku),
   KEY idx_products_category (category),
+  KEY idx_products_sub_category (sub_category),
   KEY idx_products_department (department),
   KEY idx_products_status (status),
   KEY idx_products_name (name(50))
@@ -133,6 +136,9 @@ CREATE TABLE IF NOT EXISTS orders (
   total DECIMAL(12,2) NOT NULL DEFAULT 0,
   employee_id VARCHAR(32) DEFAULT NULL,
   order_date DATE NOT NULL,
+  voided_at TIMESTAMP NULL DEFAULT NULL,
+  voided_by INT UNSIGNED DEFAULT NULL,
+  voided_by_name VARCHAR(128) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_orders_branch (branch_id),
@@ -146,6 +152,7 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 -- Order Items (items in each order)
+-- special_request: guest note (e.g. no onions). is_voided/voided_by/voided_at/voided_by_name for per-item void.
 CREATE TABLE IF NOT EXISTS order_items (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   order_id INT UNSIGNED NOT NULL,
@@ -159,6 +166,11 @@ CREATE TABLE IF NOT EXISTS order_items (
   sent_to_dept TINYINT(1) NOT NULL DEFAULT 0,
   is_complimentary TINYINT(1) NOT NULL DEFAULT 0,  -- 1 = complimentary/free item
   served_by INT UNSIGNED DEFAULT NULL,             -- Staff who served this (for commission)
+  special_request VARCHAR(512) DEFAULT NULL,        -- Guest note per item
+  is_voided TINYINT(1) NOT NULL DEFAULT 0,
+  voided_by INT UNSIGNED DEFAULT NULL,
+  voided_at TIMESTAMP NULL DEFAULT NULL,
+  voided_by_name VARCHAR(128) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   KEY idx_order_items_order (order_id)
@@ -458,6 +470,19 @@ CREATE TABLE IF NOT EXISTS product_area_prices (
   CONSTRAINT fk_product_area_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
   CONSTRAINT chk_area CHECK (area IN ('Lounge','Club','LD'))
 );
+
+-- ============================================================================
+-- MIGRATION: Add sub_category to products (run once if upgrading)
+-- ============================================================================
+-- Uncomment and run if your products table does not have sub_category yet:
+-- ALTER TABLE products ADD COLUMN sub_category VARCHAR(64) DEFAULT NULL AFTER category;
+-- ALTER TABLE products ADD KEY idx_products_sub_category (sub_category);
+
+-- ============================================================================
+-- MIGRATION: Order void + per-item void + special_request (run once if upgrading)
+-- ============================================================================
+-- Orders: ALTER TABLE orders ADD COLUMN voided_at TIMESTAMP NULL DEFAULT NULL AFTER order_date, ADD COLUMN voided_by INT UNSIGNED DEFAULT NULL, ADD COLUMN voided_by_name VARCHAR(128) DEFAULT NULL;
+-- Order items: ALTER TABLE order_items ADD COLUMN special_request VARCHAR(512) DEFAULT NULL AFTER served_by, ADD COLUMN is_voided TINYINT(1) NOT NULL DEFAULT 0, ADD COLUMN voided_by INT UNSIGNED DEFAULT NULL, ADD COLUMN voided_at TIMESTAMP NULL DEFAULT NULL, ADD COLUMN voided_by_name VARCHAR(128) DEFAULT NULL;
 
 -- ============================================================================
 -- MIGRATIONS TRACKING (legacy - single schema run)

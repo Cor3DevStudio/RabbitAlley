@@ -53,8 +53,10 @@ interface PayrollRow {
   id: string;
   employeeId: string;
   name: string;
+  timeIn?: string | null;
   budget: number;
   commission: number;
+  ldCount?: number;
   incentives: number;
   adjustments: number;
   deductions: number;
@@ -228,15 +230,19 @@ const PayrollTableRow = memo(function PayrollTableRow({
   onPrintPayslipThermal,
 }: PayrollTableRowProps) {
   const disabled = row.status === "approved";
+  const otherIncentivesTotal = Array.isArray(row.incentivesBreakdown) ? row.incentivesBreakdown.reduce((s, x) => s + (x.amount ?? 0), 0) : 0;
   return (
     <TableRow>
       <TableCell className="font-medium">{row.name}</TableCell>
       <TableCell className="font-mono text-xs">{row.employeeId}</TableCell>
+      <TableCell className="whitespace-nowrap text-muted-foreground text-sm">{row.timeIn ?? "—"}</TableCell>
       <TableCell className="text-right">{formatCurrency(row.budget)}</TableCell>
+      <TableCell className="text-center font-semibold tabular-nums">{row.ldCount ?? 0}</TableCell>
       <TableCell className="text-right">{formatCurrency(row.commission)}</TableCell>
+      <TableCell className="text-right tabular-nums">{formatCurrency(row.incentives)}</TableCell>
       <TableCell className="p-1">
         <BreakdownCell
-          total={row.incentives}
+          total={otherIncentivesTotal}
           breakdown={row.incentivesBreakdown}
           field="incentives"
           variant="incentive"
@@ -334,22 +340,34 @@ export default function Reports() {
     setError(null);
     try {
       const list = await api.reports.payroll(dateFrom, dateTo);
-      const mappedPayroll = list.map((p) => ({
-        id: p.id,
-        employeeId: p.employeeId ?? "",
-        name: p.name,
-        budget: Number(p.allowance ?? 0),
-        commission: Number(p.commission ?? 0),
-        incentives: Number(p.incentives ?? 0),
-        adjustments: Number(p.adjustments ?? 0),
-        deductions: Number(p.deductions ?? 0),
-        incentivesBreakdown: (p as { incentivesBreakdown?: BreakdownItem[] }).incentivesBreakdown ?? null,
-        adjustmentsBreakdown: (p as { adjustmentsBreakdown?: BreakdownItem[] }).adjustmentsBreakdown ?? null,
-        deductionsBreakdown: (p as { deductionsBreakdown?: BreakdownItem[] }).deductionsBreakdown ?? null,
-        netPayout: Number(p.netPayout ?? p.total ?? 0),
-        status: p.status ?? "draft",
-        approvedBy: p.approvedBy ?? null,
-      }));
+      const mappedPayroll = list.map((p) => {
+        const incB = (p as { incentivesBreakdown?: BreakdownItem[] }).incentivesBreakdown ?? null;
+        const otherInc = Array.isArray(incB) ? incB.reduce((s, x) => s + (x.amount ?? 0), 0) : 0;
+        const budget = Number(p.allowance ?? 0);
+        const commission = Number(p.commission ?? 0);
+        const incentives = Number(p.incentives ?? 0);
+        const adjustments = Number(p.adjustments ?? 0);
+        const deductions = Number(p.deductions ?? 0);
+        const netPayout = budget + commission + incentives + otherInc + adjustments - deductions;
+        return {
+          id: p.id,
+          employeeId: p.employeeId ?? "",
+          name: p.name,
+          timeIn: (p as { timeIn?: string | null }).timeIn ?? null,
+          budget,
+          commission,
+          ldCount: Number((p as { ldCount?: number }).ldCount ?? 0),
+          incentives,
+          adjustments,
+          deductions,
+          incentivesBreakdown: incB,
+          adjustmentsBreakdown: (p as { adjustmentsBreakdown?: BreakdownItem[] }).adjustmentsBreakdown ?? null,
+          deductionsBreakdown: (p as { deductionsBreakdown?: BreakdownItem[] }).deductionsBreakdown ?? null,
+          netPayout,
+          status: p.status ?? "draft",
+          approvedBy: p.approvedBy ?? null,
+        };
+      });
       setPayroll(mappedPayroll);
       const summary = mappedPayroll.reduce(
         (acc, row) => {
@@ -446,16 +464,20 @@ export default function Reports() {
         }
       } else {
         if (format === "CSV") {
-          const headers = ["Employee ID", "Name", "Budget", "Commission", "Incentives", "Adjustments", "Deductions", "Net Payout", "Status", "Approved By"];
+          const otherInc = (p: PayrollRow) => Array.isArray(p.incentivesBreakdown) ? p.incentivesBreakdown.reduce((s, x) => s + x.amount, 0) : 0;
+          const headers = ["Employee ID", "Name", "Time In", "Budget", "Total LD", "Total LD Commission", "Incentives", "Other Incentives", "Adjustments", "Deductions", "Net Payout", "Status", "Approved By"];
           const rows = payroll.map((p) => [
             p.employeeId,
             p.name,
+            p.timeIn ?? "",
             p.budget,
+            p.ldCount ?? 0,
             p.commission,
             p.incentives,
+            otherInc(p),
             p.adjustments,
             p.deductions,
-            (p.budget + p.commission + p.incentives + p.adjustments - p.deductions).toFixed(2),
+            p.netPayout.toFixed(2),
             p.status,
             p.approvedBy ?? "",
           ]);
@@ -463,16 +485,20 @@ export default function Reports() {
           const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
           downloadBlob(blob, `payroll_report_${fromTo}.csv`);
         } else if (format === "Excel") {
+          const otherInc = (p: PayrollRow) => Array.isArray(p.incentivesBreakdown) ? p.incentivesBreakdown.reduce((s, x) => s + x.amount, 0) : 0;
           const ws = XLSX.utils.json_to_sheet(
             payroll.map((p) => ({
               "Employee ID": p.employeeId,
               Name: p.name,
+              "Time In": p.timeIn ?? "",
               Budget: p.budget,
-              Commission: p.commission,
+              "Total LD": p.ldCount ?? 0,
+              "Total LD Commission": p.commission,
               Incentives: p.incentives,
+              "Other Incentives": otherInc(p),
               Adjustments: p.adjustments,
               Deductions: p.deductions,
-              "Net Payout": p.budget + p.commission + p.incentives + p.adjustments - p.deductions,
+              "Net Payout": p.netPayout,
               Status: p.status,
               "Approved By": p.approvedBy ?? "",
             }))
@@ -486,18 +512,22 @@ export default function Reports() {
           doc.text(`Payroll Report ${dateFrom} to ${dateTo}`, 14, 12);
           doc.setFontSize(10);
           doc.text(`Employees: ${payrollSummary.totalEmployees}  |  Total Payout: ₱${payrollSummary.totalPayout.toFixed(2)}  |  Incentives: ₱${payrollSummary.totalIncentives.toFixed(2)}  |  Deductions: ₱${payrollSummary.totalDeductions.toFixed(2)}`, 14, 20);
+          const otherInc = (p: PayrollRow) => Array.isArray(p.incentivesBreakdown) ? p.incentivesBreakdown.reduce((s, x) => s + x.amount, 0) : 0;
           autoTable(doc, {
             startY: 24,
-            head: [["Employee ID", "Name", "Budget", "Comm", "Incent", "Adj", "Ded", "Net", "Status"]],
+            head: [["Employee ID", "Name", "Time In", "Budget", "Total LD", "Comm (₱)", "Incent", "Other Inc", "Adj", "Ded", "Net", "Status"]],
             body: payroll.map((p) => [
               p.employeeId,
               p.name,
+              p.timeIn ?? "—",
               p.budget.toFixed(2),
+              String(p.ldCount ?? 0),
               p.commission.toFixed(2),
               p.incentives.toFixed(2),
+              otherInc(p).toFixed(2),
               p.adjustments.toFixed(2),
               p.deductions.toFixed(2),
-              (p.budget + p.commission + p.incentives + p.adjustments - p.deductions).toFixed(2),
+              p.netPayout.toFixed(2),
               p.status,
             ]),
           });
@@ -572,7 +602,7 @@ export default function Reports() {
     if (!printWindow) return;
 
     const dateTimeIn = `${dateFrom} to ${dateTo}`;
-    const ldCount = 0;
+    const ldCount = row.ldCount ?? 0;
     const totalPayout = row.netPayout;
     const generatedAt = new Date().toLocaleString();
 
@@ -659,7 +689,7 @@ export default function Reports() {
 
   const handleDownloadPayslipPdf = useCallback((row: PayrollRow) => {
     const dateTimeIn = `${dateFrom} to ${dateTo}`;
-    const ldCount = 0;
+    const ldCount = row.ldCount ?? 0;
     const totalPayout = row.netPayout;
     const generatedAt = new Date().toLocaleString();
 
@@ -826,8 +856,11 @@ export default function Reports() {
       setPayroll((prev) =>
         prev.map((r) => {
           if (r.id !== row.id) return r;
-          const next = { ...r, [field]: total, [`${field}Breakdown`]: breakdown };
-          next.netPayout = next.budget + next.commission + next.incentives + next.adjustments - next.deductions;
+          const next = { ...r, [`${field}Breakdown`]: breakdown };
+          if (field === "adjustments") next.adjustments = total;
+          if (field === "deductions") next.deductions = total;
+          const otherInc = Array.isArray(next.incentivesBreakdown) ? next.incentivesBreakdown.reduce((s, x) => s + x.amount, 0) : 0;
+          next.netPayout = next.budget + next.commission + next.incentives + otherInc + next.adjustments - next.deductions;
           return next;
         })
       );
@@ -1018,9 +1051,12 @@ export default function Reports() {
               <TableRow>
                 <TableHead>Employee</TableHead>
                 <TableHead className="whitespace-nowrap">Employee ID</TableHead>
+                <TableHead className="whitespace-nowrap">Time In</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Budget</TableHead>
-                <TableHead className="text-right whitespace-nowrap">Commission</TableHead>
+                <TableHead className="text-center whitespace-nowrap">Total LD</TableHead>
+                <TableHead className="text-right whitespace-nowrap">Total LD Commission</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Incentives</TableHead>
+                <TableHead className="text-right whitespace-nowrap">Other Incentives</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Adjustments</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Deductions</TableHead>
                 <TableHead className="text-right whitespace-nowrap font-semibold">Net Payout</TableHead>
@@ -1032,7 +1068,7 @@ export default function Reports() {
             <TableBody>
               {loadingPayroll ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
                     Loading…
                   </TableCell>
                 </TableRow>

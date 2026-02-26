@@ -40,13 +40,9 @@ export interface StaffMember {
   type: string;
   allowance: number;
   hourly: number;
-  // New fields for commission/incentive system
   budget: number;
-  commissionRate: number;   // % commission on ladies drinks
-  incentiveRate: number;    // Fixed amount per ladies drink
-  tableIncentive: number;   // Incentive per table served
-  hasQuota: boolean;
-  quotaAmount: number;
+  commissionRate: number;   // Fixed ₱ commission on ladies drinks
+  incentiveRate: number;    // Fixed ₱ incentive amount
   hasLogin: boolean;
   status: "active" | "inactive";
 }
@@ -63,9 +59,6 @@ const emptyStaff = (): Omit<StaffMember, "id"> => ({
   budget: 0,
   commissionRate: 0,
   incentiveRate: 0,
-  tableIncentive: 0,
-  hasQuota: false,
-  quotaAmount: 0,
   hasLogin: false,
   status: "active",
 });
@@ -89,7 +82,20 @@ export default function Staff() {
     setError(null);
     try {
       const list = await api.staff.list();
-      setStaff(list.map(s => ({ ...s, status: s.status as "active" | "inactive" })));
+      setStaff(list.map(s => ({
+        id: s.id,
+        code: s.code,
+        name: s.name,
+        nickname: s.nickname,
+        type: s.type,
+        allowance: s.allowance,
+        hourly: s.hourly,
+        budget: s.budget,
+        commissionRate: s.commissionRate,
+        incentiveRate: s.incentiveRate,
+        hasLogin: s.hasLogin,
+        status: s.status as "active" | "inactive",
+      })));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load staff");
     } finally {
@@ -135,9 +141,6 @@ export default function Staff() {
       budget: member.budget,
       commissionRate: member.commissionRate,
       incentiveRate: member.incentiveRate,
-      tableIncentive: member.tableIncentive,
-      hasQuota: member.hasQuota,
-      quotaAmount: member.quotaAmount,
       hasLogin: member.hasLogin,
       status: member.status,
     });
@@ -153,7 +156,7 @@ export default function Staff() {
     }
     setSaving(true);
     try {
-      await api.staff.create({ ...form, allowance: 0, hourly: 0, password: newPassword.trim() || "password" });
+      await api.staff.create({ ...form, allowance: 0, hourly: 0, tableIncentive: 0, hasQuota: false, quotaAmount: 0, password: newPassword.trim() || "password" });
       setAddOpen(false);
       setForm(emptyStaff());
       setNewPassword("password");
@@ -171,7 +174,7 @@ export default function Staff() {
     if (!editingStaff || !form.code.trim() || !form.name.trim()) return;
     setSaving(true);
     try {
-      await api.staff.update(editingStaff.id, { ...form, allowance: 0, hourly: 0 });
+      await api.staff.update(editingStaff.id, { ...form, allowance: 0, hourly: 0, tableIncentive: 0, hasQuota: false, quotaAmount: 0 });
       setEditOpen(false);
       setEditingStaff(null);
       setForm(emptyStaff());
@@ -286,76 +289,31 @@ export default function Staff() {
       <div className="pb-2 border-b mt-6">
         <h4 className="text-sm font-semibold text-muted-foreground">Commission & Incentives</h4>
       </div>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label htmlFor="commissionRate">Commission Rate (%)</Label>
-          <p className="text-xs text-muted-foreground">% on ladies drinks</p>
+          <Label htmlFor="commissionRate">Commission (₱)</Label>
+          <p className="text-xs text-muted-foreground">Fixed amount per ladies drink sold</p>
           <Input
             id="commissionRate"
             type="number"
             min={0}
-            max={100}
-            step={0.1}
+            step={0.01}
             value={form.commissionRate || ""}
             onChange={(e) => setForm((f) => ({ ...f, commissionRate: Number(e.target.value) || 0 }))}
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="incentiveRate">Incentive per LD (₱)</Label>
-          <p className="text-xs text-muted-foreground">Fixed per ladies drink</p>
+          <Label htmlFor="incentiveRate">Incentive (₱)</Label>
+          <p className="text-xs text-muted-foreground">Fixed incentive amount per shift/order</p>
           <Input
             id="incentiveRate"
             type="number"
             min={0}
+            step={0.01}
             value={form.incentiveRate || ""}
             onChange={(e) => setForm((f) => ({ ...f, incentiveRate: Number(e.target.value) || 0 }))}
           />
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="tableIncentive">Table Incentive (₱)</Label>
-          <p className="text-xs text-muted-foreground">Per table served</p>
-          <Input
-            id="tableIncentive"
-            type="number"
-            min={0}
-            value={form.tableIncentive || ""}
-            onChange={(e) => setForm((f) => ({ ...f, tableIncentive: Number(e.target.value) || 0 }))}
-          />
-        </div>
-      </div>
-
-      {/* Quota System */}
-      <div className="pb-2 border-b mt-6">
-        <h4 className="text-sm font-semibold text-muted-foreground">Quota System</h4>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label>Has Quota?</Label>
-          <p className="text-xs text-muted-foreground">If quota not reached, budget is halved</p>
-          <Select 
-            value={form.hasQuota ? "yes" : "no"} 
-            onValueChange={(v) => setForm((f) => ({ ...f, hasQuota: v === "yes" }))}
-          >
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="no">No Quota</SelectItem>
-              <SelectItem value="yes">Has Quota</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        {form.hasQuota && (
-          <div className="space-y-2">
-            <Label htmlFor="quotaAmount">Quota Amount (₱)</Label>
-            <p className="text-xs text-muted-foreground">Target sales amount</p>
-            <Input
-              id="quotaAmount"
-              type="number"
-              min={0}
-              value={form.quotaAmount || ""}
-              onChange={(e) => setForm((f) => ({ ...f, quotaAmount: Number(e.target.value) || 0 }))}
-            />
-          </div>
-        )}
       </div>
 
       {editOpen && (

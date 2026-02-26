@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { TableGrid } from "@/components/dashboard/TableGrid";
 import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
-import { areas, mapApiTable } from "@/types/pos";
+import { mapApiTable } from "@/types/pos";
 import type { Table } from "@/types/pos";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, ArrowRightLeft } from "lucide-react";
+import { Plus, ArrowRightLeft, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 export default function POS() {
@@ -35,17 +35,24 @@ export default function POS() {
   const [error, setError] = useState<string | null>(null);
   const [addTableOpen, setAddTableOpen] = useState(false);
   const [addName, setAddName] = useState("");
-  const [addArea, setAddArea] = useState<"Lounge" | "Club" | "LD">("Lounge");
+  const [addArea, setAddArea] = useState<"Lounge" | "Club">("Lounge");
   const [editTableOpen, setEditTableOpen] = useState(false);
   const [editingTable, setEditingTable] = useState<Table | null>(null);
   const [editName, setEditName] = useState("");
-  const [editArea, setEditArea] = useState<"Lounge" | "Club" | "LD">("Lounge");
+  const [editArea, setEditArea] = useState<"Lounge" | "Club">("Lounge");
   const [saving, setSaving] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [sourceTableId, setSourceTableId] = useState("");
   const [targetTableId, setTargetTableId] = useState("");
   const [mergeReason, setMergeReason] = useState("");
   const [merging, setMerging] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferSourceTableId, setTransferSourceTableId] = useState("");
+  const [transferTargetTableId, setTransferTargetTableId] = useState("");
+  const [transferReason, setTransferReason] = useState("");
+  const [transferring, setTransferring] = useState(false);
+
+  const posDisplayAreas = ["Lounge", "Club"] as const;
 
   const loadTables = async () => {
     setLoading(true);
@@ -75,7 +82,7 @@ export default function POS() {
       await api.dashboard.createTable({ name: addName.trim(), area: addArea });
       setAddTableOpen(false);
       setAddName("");
-      setAddArea("Lounge");
+      setAddArea("Lounge" as const);
       toast.success("Table added");
       loadTables();
     } catch (e) {
@@ -88,7 +95,7 @@ export default function POS() {
   const openEditTable = (table: Table) => {
     setEditingTable(table);
     setEditName(table.name);
-    setEditArea(table.area);
+    setEditArea(table.area === "LD" ? "Lounge" : table.area);
     setEditTableOpen(true);
   };
 
@@ -100,7 +107,7 @@ export default function POS() {
     }
     setSaving(true);
     try {
-      await api.dashboard.updateTable(editingTable.id, { name: editName.trim(), area: editArea });
+      await api.dashboard.updateTable(editingTable.id, { name: editName.trim(), area: editArea as string });
       setEditTableOpen(false);
       setEditingTable(null);
       toast.success("Table updated");
@@ -169,6 +176,53 @@ export default function POS() {
     }
   };
 
+  const openTransferDialog = () => {
+    setTransferSourceTableId("");
+    setTransferTargetTableId("");
+    setTransferReason("");
+    setTransferOpen(true);
+  };
+
+  const handleTransferTable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferSourceTableId || !transferTargetTableId) {
+      toast.error("Select source and target tables");
+      return;
+    }
+    if (transferSourceTableId === transferTargetTableId) {
+      toast.error("Source and target tables must be different");
+      return;
+    }
+    const source = tables.find((t) => t.id === transferSourceTableId);
+    const target = tables.find((t) => t.id === transferTargetTableId);
+    if (!source?.currentOrderId) {
+      toast.error("Source table must have an active order");
+      return;
+    }
+    if (target?.status !== "available" || target.currentOrderId) {
+      toast.error("Target table must be available (no active order)");
+      return;
+    }
+
+    setTransferring(true);
+    try {
+      await api.tables.transfer({
+        orderId: source.currentOrderId,
+        fromTable: source.id,
+        toTable: target.id,
+        transferredBy: user?.id || "0",
+        reason: transferReason.trim() || undefined,
+      });
+      toast.success(`Order moved from ${source.area} - ${source.name} to ${target.area} - ${target.name}`);
+      setTransferOpen(false);
+      loadTables();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to transfer table");
+    } finally {
+      setTransferring(false);
+    }
+  };
+
   if (error) {
     return (
       <AppLayout>
@@ -193,15 +247,21 @@ export default function POS() {
           </Button>
         )}
         {canMergeTables && (
-          <Button variant="outline" onClick={openMergeDialog}>
-            <ArrowRightLeft className="w-4 h-4 mr-2" />
-            Merge Tables
-          </Button>
+          <>
+            <Button variant="outline" onClick={openTransferDialog}>
+              <ArrowRight className="w-4 h-4 mr-2" />
+              Transfer Table
+            </Button>
+            <Button variant="outline" onClick={openMergeDialog}>
+              <ArrowRightLeft className="w-4 h-4 mr-2" />
+              Merge Tables
+            </Button>
+          </>
         )}
       </PageHeader>
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {["Lounge", "Club", "LD"].map((area) => (
+          {posDisplayAreas.map((area) => (
             <div key={area} className="space-y-3">
               <div className="h-6 w-32 rounded bg-muted animate-pulse" />
               <div className="grid grid-cols-2 gap-2">
@@ -215,6 +275,7 @@ export default function POS() {
       ) : (
         <TableGrid
           tables={tables}
+          displayAreas={posDisplayAreas}
           showTableActions={canAddTable}
           onEditTable={canAddTable ? openEditTable : undefined}
           onDeleteTable={canAddTable ? handleDeleteTable : undefined}
@@ -239,10 +300,10 @@ export default function POS() {
             </div>
             <div className="space-y-2">
               <Label>Area</Label>
-              <Select value={addArea} onValueChange={(v) => setAddArea(v as "Lounge" | "Club" | "LD")}>
+              <Select value={addArea} onValueChange={(v) => setAddArea(v as "Lounge" | "Club")}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {areas.map((a) => (
+                  {posDisplayAreas.map((a) => (
                     <SelectItem key={a} value={a}>{a}</SelectItem>
                   ))}
                 </SelectContent>
@@ -274,10 +335,10 @@ export default function POS() {
             </div>
             <div className="space-y-2">
               <Label>Area</Label>
-              <Select value={editArea} onValueChange={(v) => setEditArea(v as "Lounge" | "Club" | "LD")}>
+              <Select value={editArea} onValueChange={(v) => setEditArea(v as "Lounge" | "Club")}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {areas.map((a) => (
+                  {posDisplayAreas.map((a) => (
                     <SelectItem key={a} value={a}>{a}</SelectItem>
                   ))}
                 </SelectContent>
@@ -342,6 +403,62 @@ export default function POS() {
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setMergeOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={merging}>{merging ? "Merging…" : "Merge"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Transfer Table</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Move the whole order from one table to another open table (e.g. guests moving to a different table or area).
+            </p>
+          </DialogHeader>
+          <form onSubmit={handleTransferTable} className="space-y-4">
+            <div className="space-y-2">
+              <Label>From table (has active order)</Label>
+              <Select value={transferSourceTableId} onValueChange={setTransferSourceTableId}>
+                <SelectTrigger><SelectValue placeholder="Select occupied table" /></SelectTrigger>
+                <SelectContent>
+                  {tables
+                    .filter((t) => t.status === "occupied" && t.currentOrderId)
+                    .map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.area} - {t.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>To table (must be available)</Label>
+              <Select value={transferTargetTableId} onValueChange={setTransferTargetTableId}>
+                <SelectTrigger><SelectValue placeholder="Select available table" /></SelectTrigger>
+                <SelectContent>
+                  {tables
+                    .filter((t) => t.status === "available")
+                    .map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.area} - {t.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="transferReason">Reason (optional)</Label>
+              <Input
+                id="transferReason"
+                value={transferReason}
+                onChange={(e) => setTransferReason(e.target.value)}
+                placeholder="e.g. Moved to Lounge"
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setTransferOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={transferring}>{transferring ? "Transferring…" : "Transfer"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

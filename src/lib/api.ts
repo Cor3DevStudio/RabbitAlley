@@ -41,6 +41,8 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export interface OrderItem {
+  /** From API when order is loaded (for per-item void) */
+  id?: string;
   productId: string;
   name: string;
   quantity: number;
@@ -55,6 +57,12 @@ export interface OrderItem {
   servedBy?: string;
   /** Staff display name for served-by (UI only) */
   servedByName?: string;
+  /** Guest note per item (e.g. no onions) */
+  specialRequest?: string | null;
+  /** Item was voided by manager */
+  isVoided?: boolean;
+  /** Manager name who voided (for receipt) */
+  voidedByName?: string | null;
 }
 
 export interface Order {
@@ -135,7 +143,7 @@ export const api = {
     },
   },
   dashboard: {
-    stats: () => fetchApi<{ todaysOrders: number; todaysSales: number; openTables: number; pendingOrders: number }>("/api/dashboard/stats"),
+    stats: () => fetchApi<{ todaysOrders: number; todaysSales: number; todaysLdSales: number; openTables: number; pendingOrders: number }>("/api/dashboard/stats"),
     tables: () => fetchApi<Array<{ id: string; name: string; area: string; status: string; currentOrderId?: string }>>("/api/dashboard/tables"),
     createTable: (body: { name: string; area: string }) =>
       fetchApi<{ id: string; name: string; area: string; status: string; currentOrderId?: string }>("/api/dashboard/tables", { method: "POST", body: JSON.stringify(body) }),
@@ -150,11 +158,17 @@ export const api = {
       fetchApi<{ ok: boolean; subtotal: number; tax: number; total: number }>(`/api/orders/${orderId}/items`, { method: "POST", body: JSON.stringify({ items }) }),
     getByTable: (tableId: string) =>
       fetchApi<{
-        orders: Array<Order & { items: OrderItem[] }>;
+        orders: Array<Order & { items: OrderItem[]; voidedAt?: string | null; voidedByName?: string | null }>;
         tableStatus: "available" | "occupied";
       }>(`/api/orders/table/${tableId}`),
     pay: (orderId: string, paymentMethod?: string) =>
       fetchApi<{ ok: boolean }>(`/api/orders/${orderId}/pay`, { method: "PATCH", body: JSON.stringify({ paymentMethod }) }),
+    void: (orderId: string, data: { employeeId: string; password: string; reason?: string }) =>
+      fetchApi<{ ok: boolean; voidedByName: string }>(`/api/orders/${orderId}/void`, { method: "POST", body: JSON.stringify(data) }),
+  },
+  orderItems: {
+    void: (itemId: string, data: { employeeId: string; password: string }) =>
+      fetchApi<{ ok: boolean; voidedByName: string }>(`/api/order-items/${itemId}/void`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   products: {
     list: (params?: { search?: string; category?: string; department?: string; area?: "Lounge" | "Club" | "LD" }) => {
@@ -163,12 +177,12 @@ export const api = {
       if (params?.category) q.set("category", params.category);
       if (params?.department) q.set("department", params.department);
       if (params?.area) q.set("area", params.area);
-      return fetchApi<Array<{ id: string; sku: string; name: string; description?: string; category: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }>>("/api/products?" + q.toString());
+      return fetchApi<Array<{ id: string; sku: string; name: string; description?: string; category: string; sub_category?: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }>>("/api/products?" + q.toString());
     },
-    create: (body: { sku: string; name: string; description?: string; category?: string; department?: string; price?: number; cost?: number; commission?: number; status?: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }) =>
-      fetchApi<{ id: string; sku: string; name: string; description?: string; category: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: Record<string, number> }>("/api/products", { method: "POST", body: JSON.stringify(body) }),
-    update: (id: string, body: { sku: string; name: string; description?: string; category?: string; department?: string; price?: number; cost?: number; commission?: number; status?: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }) =>
-      fetchApi<{ id: string; sku: string; name: string; description?: string; category: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: Record<string, number> }>(`/api/products/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+    create: (body: { sku: string; name: string; description?: string; category?: string; sub_category?: string; department?: string; price?: number; cost?: number; commission?: number; status?: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }) =>
+      fetchApi<{ id: string; sku: string; name: string; description?: string; category: string; sub_category?: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: Record<string, number> }>("/api/products", { method: "POST", body: JSON.stringify(body) }),
+    update: (id: string, body: { sku: string; name: string; description?: string; category?: string; sub_category?: string; department?: string; price?: number; cost?: number; commission?: number; status?: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }) =>
+      fetchApi<{ id: string; sku: string; name: string; description?: string; category: string; sub_category?: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: Record<string, number> }>(`/api/products/${id}`, { method: "PUT", body: JSON.stringify(body) }),
     setStatus: (id: string, status: string) => fetchApi<{ ok: boolean }>(`/api/products/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   },
   staff: {
@@ -179,7 +193,7 @@ export const api = {
     list: () => fetchApi<Array<{ 
       id: string; code: string; name: string; nickname: string; type: string; 
       allowance: number; hourly: number; budget: number; commissionRate: number;
-      incentiveRate: number; tableIncentive: number; hasQuota: boolean; quotaAmount: number;
+      incentiveRate: number; tableIncentive?: number; hasQuota?: boolean; quotaAmount?: number;
       hasLogin: boolean; status: string 
     }>>("/api/staff"),
     create: (body: { 
@@ -405,15 +419,17 @@ export const api = {
   // TABLE TRANSFERS
   // ============================================================================
   tables: {
-    payAll: (tableId: string, paymentMethod?: string, discountName?: string, discountAmount?: number, customerName?: string) =>
+    payAll: (tableId: string, paymentMethod?: string, discountName?: string, discountAmount?: number, customerName?: string, splits?: Array<{ amount: number; paymentMethod: string; customerName?: string }>) =>
       fetchApi<{ ok: boolean; orderIds: string[]; subtotal: number; discount: number; tax: number; total: number }>(
         `/api/tables/${tableId}/pay-all`,
-        { method: "POST", body: JSON.stringify({ paymentMethod, discountName, discountAmount, customerName }) }
+        { method: "POST", body: JSON.stringify({ paymentMethod, discountName, discountAmount, customerName, splits }) }
       ),
     transfer: (data: { orderId: string; fromTable: string; toTable: string; transferredBy: string; reason?: string }) =>
       fetchApi<{ ok: boolean; message: string }>("/api/tables/transfer", { method: "POST", body: JSON.stringify(data) }),
     merge: (data: { sourceOrderId: string; targetOrderId: string; transferredBy: string; reason?: string }) =>
       fetchApi<{ ok: boolean; message: string }>("/api/tables/merge", { method: "POST", body: JSON.stringify(data) }),
+    transfer: (data: { orderId: string; fromTable: string; toTable: string; transferredBy: string; reason?: string }) =>
+      fetchApi<{ ok: boolean; message: string }>("/api/tables/transfer", { method: "POST", body: JSON.stringify(data) }),
     getTransfers: (orderId: string) =>
       fetchApi<TableTransfer[]>(`/api/tables/transfers/${orderId}`),
   },
