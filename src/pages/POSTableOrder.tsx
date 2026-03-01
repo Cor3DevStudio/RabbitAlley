@@ -2605,7 +2605,10 @@ export default function POSTableOrder() {
                   {lastReceiptSentToBackend ? (
                     <p className="text-sm text-muted-foreground mb-4">Receipt was sent to the printer. No browser print.</p>
                   ) : (
-                    <p className="text-sm text-muted-foreground mb-2">Receipt was not sent. Set Lounge / Club / LD printers in Settings for automatic printing.</p>
+                    <>
+                      <p className="text-sm text-muted-foreground mb-2">Receipt was not sent to printer automatically.</p>
+                      <p className="text-xs text-muted-foreground mb-2">For <strong>LAN printers</strong>: set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> in <code className="bg-muted px-1 rounded">server/.env</code> (comma-separated for 3 areas), restart the server, then assign in <strong>Settings</strong>. For USB, click &quot;Print receipt&quot; below and choose the printer in the dialog.</p>
+                    </>
                   )}
                   <div className="flex gap-3 justify-center flex-wrap">
                     {!lastReceiptSentToBackend && lastReceiptForPrint && (
@@ -2614,11 +2617,11 @@ export default function POSTableOrder() {
                         variant="outline"
                         onClick={() => {
                           printReceiptViaBrowser(lastReceiptForPrint!);
-                          toast.info("Browser print fallback.");
+                          toast.info("In the dialog, select your printer (e.g. XPrinter) then click Print.");
                         }}
                       >
                         <Printer className="w-4 h-4 mr-2" />
-                        Print receipt (fallback)
+                        Print receipt
                       </Button>
                     )}
                     <Button

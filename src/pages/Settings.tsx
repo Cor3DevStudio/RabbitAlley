@@ -244,7 +244,7 @@ export default function Settings() {
                   <p className="text-xs text-muted-foreground">Loading printers…</p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  <strong>Ethernet:</strong> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> in <code className="bg-muted px-1 rounded">server/.env</code> (comma-separated for multiple). Printers from DB also appear above.
+                  <strong>LAN printers:</strong> in <code className="bg-muted px-1 rounded">server/.env</code> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> (e.g. <code className="bg-muted px-1 rounded">tcp://192.168.1.101:9100,tcp://192.168.1.102:9100,tcp://192.168.1.103:9100</code> for 3 areas), restart the server, then assign each here to Lounge / Club / LD.
                 </p>
               </div>
               <div className="space-y-2">
