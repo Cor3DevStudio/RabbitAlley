@@ -29,7 +29,7 @@ const {
   DB_USER = "root",
   DB_PASSWORD = "",
   DB_DATABASE = "rabbit_alley_pos",
-  PORT = 3001,
+  PORT = 8000,
   PRINTER_TYPE = "epson", // epson, star, etc
   PRINTER_INTERFACE = "", // Leave empty to auto-detect, or set like "\\\\localhost\\XP-K200L" or "tcp://192.168.1.100"
   PRINTER_TIMEOUT = "10000", // Socket timeout in ms for network printers (default 10s)
@@ -3085,6 +3085,16 @@ app.put("/api/settings", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`API running at http://localhost:${PORT}`);
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`\nPort ${PORT} is already in use. Either:`);
+    console.error(`  1. Stop the other process: taskkill /F /IM node.exe  (or close the other terminal running the server)`);
+    console.error(`  2. Or use another port: set PORT=3002 in server/.env and restart\n`);
+    process.exit(1);
+  }
+  throw err;
 });

@@ -62,8 +62,8 @@ if not exist "server\.env" (
     echo.
 )
 
-:: ---- Read API port from server/.env (default 3001) ----
-set "API_PORT=3001"
+:: ---- Read API port from server/.env (default 8000) ----
+set "API_PORT=8000"
 for /f "usebackq tokens=1,2 delims==" %%A in ("server\.env") do (
     if "%%A"=="PORT" set "API_PORT=%%B"
 )

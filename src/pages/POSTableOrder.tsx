@@ -50,6 +50,7 @@ export default function POSTableOrder() {
   const [processingPayment, setProcessingPayment] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [paymentStep, setPaymentStep] = useState<"processing" | "printing" | "done">("processing");
+  const [lastReceiptSentToBackend, setLastReceiptSentToBackend] = useState(false);
   const [lastReceiptForPrint, setLastReceiptForPrint] = useState<{
     orderNumber: string;
     date: string;
@@ -525,7 +526,7 @@ export default function POSTableOrder() {
           unitPrice: product.price,
           discount: 0,
           subtotal: product.price,
-          department: product.department,
+          department: product.department as OrderItem["department"],
           servedBy,
           servedByName,
           specialRequest: specialRequest || undefined,
@@ -911,22 +912,20 @@ export default function POSTableOrder() {
       };
       setLastReceiptForPrint(receiptData);
 
-      // Try to print via backend (automatic when Node 20 + printer package + PRINTER_INTERFACE=printer:Name)
+      // Print via backend only — no browser print dialog; receipt goes straight to the printer set in Settings for this area
       let receiptSent = false;
       try {
         const printerName = getReceiptPrinterForArea(table?.area) || undefined;
         const printResult = await api.print.receipt(receiptData, printerName);
-        if (printResult.ok) {
-          receiptSent = true;
-        }
-        // If ok: false we do not open the browser print dialog; user can click "Print receipt" if needed
+        if (printResult.ok) receiptSent = true;
       } catch (_printErr) {
-        // API error — do not open dialog; "Print receipt" button remains available
+        // Backend print failed
       }
 
       await new Promise((resolve) => setTimeout(resolve, 1500));
+      setLastReceiptSentToBackend(receiptSent);
       setPaymentStep("done");
-      toast.success(receiptSent ? "Payment processed. Receipt sent to printer." : "Payment processed. Click «Print receipt» if you need a copy.");
+      toast.success(receiptSent ? "Payment complete. Receipt sent to printer." : "Payment complete. Configure a printer in Settings for automatic receipts.");
     } catch {
       toast.error("Failed to process payment");
       setPaymentModalOpen(false);
@@ -1080,7 +1079,7 @@ export default function POSTableOrder() {
       change: 0,
     };
     if (tab.voidedByName) {
-      receiptData.items.push({ name: `ORDER VOIDED - Manager: ${tab.voidedByName}`, quantity: 1, subtotal: 0 });
+      receiptData.items.push({ name: `ORDER VOIDED - Manager: ${tab.voidedByName}`, quantity: 1, subtotal: 0, isComplimentary: false });
     }
     printReceiptViaBrowser(receiptData);
     toast.success("Reprint opened in new window");
@@ -2603,30 +2602,32 @@ export default function POSTableOrder() {
                     </svg>
                   </div>
                   <h3 className="text-lg font-semibold text-green-600">Payment Complete!</h3>
-                  <p className="text-sm text-muted-foreground mb-2">Print the receipt or close to finish.</p>
-                  <p className="text-xs text-amber-700 dark:text-amber-300 mb-4 px-3 py-2 bg-amber-50 dark:bg-amber-950/50 rounded border border-amber-200 dark:border-amber-800">
-                    In the print dialog, set <strong>Destination</strong> to your receipt printer (e.g. XP-80C), not &quot;Microsoft Print to PDF&quot;.
-                  </p>
+                  {lastReceiptSentToBackend ? (
+                    <p className="text-sm text-muted-foreground mb-4">Receipt was sent to the printer. No browser print.</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground mb-2">Receipt was not sent. Set Lounge / Club / LD printers in Settings for automatic printing.</p>
+                  )}
                   <div className="flex gap-3 justify-center flex-wrap">
+                    {!lastReceiptSentToBackend && lastReceiptForPrint && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          printReceiptViaBrowser(lastReceiptForPrint!);
+                          toast.info("Browser print fallback.");
+                        }}
+                      >
+                        <Printer className="w-4 h-4 mr-2" />
+                        Print receipt (fallback)
+                      </Button>
+                    )}
                     <Button
                       type="button"
-                      onClick={() => {
-                        if (lastReceiptForPrint) {
-                          printReceiptViaBrowser(lastReceiptForPrint);
-                          toast.info("In the print dialog, change Destination from «Microsoft Print to PDF» to your receipt printer (e.g. XP-80C).", { duration: 6000 });
-                        }
-                      }}
-                      disabled={!lastReceiptForPrint}
-                    >
-                      <Printer className="w-4 h-4 mr-2" />
-                      Print receipt
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
+                      variant={lastReceiptSentToBackend ? "default" : "outline"}
                       onClick={() => {
                         setPaymentModalOpen(false);
                         setLastReceiptForPrint(null);
+                        setLastReceiptSentToBackend(false);
                         navigate("/pos");
                       }}
                     >
