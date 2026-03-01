@@ -2,7 +2,8 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
-import { api, RECEIPT_PRINTER_STORAGE_KEY, type OrderItem } from "@/lib/api";
+import { api, type OrderItem } from "@/lib/api";
+import { getReceiptPrinterForArea } from "@/lib/storage-keys";
 import { getPosSettings } from "@/lib/posSettings";
 import { mapApiTable, type Table, type Product } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
@@ -913,8 +914,8 @@ export default function POSTableOrder() {
       // Try to print via backend (automatic when Node 20 + printer package + PRINTER_INTERFACE=printer:Name)
       let receiptSent = false;
       try {
-        const printerName = localStorage.getItem(RECEIPT_PRINTER_STORAGE_KEY);
-        const printResult = await api.print.receipt(receiptData, printerName || undefined);
+        const printerName = getReceiptPrinterForArea(table?.area) || undefined;
+        const printResult = await api.print.receipt(receiptData, printerName);
         if (printResult.ok) {
           receiptSent = true;
         }

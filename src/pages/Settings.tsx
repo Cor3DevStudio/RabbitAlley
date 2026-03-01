@@ -14,7 +14,13 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { api, RECEIPT_PRINTER_STORAGE_KEY } from "@/lib/api";
+import { api } from "@/lib/api";
+import {
+  POS_AREAS,
+  RECEIPT_PRINTERS_BY_AREA_KEY,
+  RECEIPT_PRINTER_STORAGE_KEY,
+  type ReceiptPrintersByArea,
+} from "@/lib/storage-keys";
 import { getPosSettings, savePosSettings } from "@/lib/posSettings";
 
 export default function Settings() {
@@ -30,7 +36,19 @@ export default function Settings() {
   const [isSaving, setIsSaving] = useState(false);
   const [printers, setPrinters] = useState<Array<{ name: string; isDefault?: boolean }>>([]);
   const [printersError, setPrintersError] = useState<string | null>(null);
-  const [receiptPrinter, setReceiptPrinter] = useState<string>(() => localStorage.getItem(RECEIPT_PRINTER_STORAGE_KEY) || "");
+  const [receiptPrintersByArea, setReceiptPrintersByArea] = useState<ReceiptPrintersByArea>(() => {
+    try {
+      const raw = localStorage.getItem(RECEIPT_PRINTERS_BY_AREA_KEY);
+      if (raw) {
+        const p = JSON.parse(raw) as Record<string, string>;
+        return { Lounge: p.Lounge ?? "", Club: p.Club ?? "", LD: p.LD ?? "" };
+      }
+      const single = localStorage.getItem(RECEIPT_PRINTER_STORAGE_KEY) || "";
+      return { Lounge: single, Club: single, LD: single };
+    } catch {
+      return { Lounge: "", Club: "", LD: "" };
+    }
+  });
 
   // Fetch settings from DB on mount and merge into local state (DB is source of truth)
   useEffect(() => {
@@ -66,11 +84,14 @@ export default function Settings() {
       .then((res) => {
         setPrinters(res.printers || []);
         setPrintersError(res.error || null);
-        const saved = localStorage.getItem(RECEIPT_PRINTER_STORAGE_KEY);
-        if (saved) setReceiptPrinter(saved);
-        else if (res.printers?.length) {
-          const defaultOne = res.printers.find((p) => p.isDefault);
-          setReceiptPrinter(defaultOne?.name || res.printers[0].name || "");
+        const raw = localStorage.getItem(RECEIPT_PRINTERS_BY_AREA_KEY);
+        if (raw) {
+          try {
+            const p = JSON.parse(raw) as Record<string, string>;
+            setReceiptPrintersByArea({ Lounge: p.Lounge ?? "", Club: p.Club ?? "", LD: p.LD ?? "" });
+          } catch {
+            // keep current state
+          }
         }
       })
       .catch(() => {
@@ -182,32 +203,40 @@ export default function Settings() {
               <CardDescription>Customize your printed receipts</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Receipt printer (automatic print)</Label>
-                <Select
-                  value={receiptPrinter || "_none"}
-                  onValueChange={(v) => {
-                    const name = v === "_none" ? "" : v;
-                    setReceiptPrinter(name);
-                    if (name) localStorage.setItem(RECEIPT_PRINTER_STORAGE_KEY, name);
-                    else localStorage.removeItem(RECEIPT_PRINTER_STORAGE_KEY);
-                    toast.success(name ? `Receipts will print to ${name}` : "Receipt printer cleared");
-                  }}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select printer" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="_none">No automatic print (use «Print receipt» in POS)</SelectItem>
-                    {printers.map((p) => (
-                      <SelectItem key={p.name} value={p.name}>
-                        {(p as { displayName?: string }).displayName || p.name}
-                        {p.isDefault ? " (default)" : ""}
-                        {(p as { isNetwork?: boolean }).isNetwork ? " — from server config" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="space-y-4">
+                <Label>Receipt printers by area (automatic print)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Set one printer per area. Receipts for Lounge tables print to the Lounge printer, Club to Club, LD to LD.
+                </p>
+                {POS_AREAS.map((area) => (
+                  <div key={area} className="space-y-1">
+                    <Label className="text-muted-foreground">{area}</Label>
+                    <Select
+                      value={(receiptPrintersByArea[area] ?? "") || "_none"}
+                      onValueChange={(v) => {
+                        const name = v === "_none" ? "" : v;
+                        const next = { ...receiptPrintersByArea, [area]: name };
+                        setReceiptPrintersByArea(next);
+                        localStorage.setItem(RECEIPT_PRINTERS_BY_AREA_KEY, JSON.stringify(next));
+                        toast.success(name ? `${area} receipts → ${name}` : `${area} printer cleared`);
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder={`Select printer for ${area}`} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="_none">No automatic print</SelectItem>
+                        {printers.map((p) => (
+                          <SelectItem key={p.name} value={p.name}>
+                            {(p as { displayName?: string }).displayName || p.name}
+                            {p.isDefault ? " (default)" : ""}
+                            {(p as { isNetwork?: boolean }).isNetwork ? " — network" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
                 {printersError && (
                   <p className="text-xs text-amber-600 dark:text-amber-400">{printersError}</p>
                 )}
@@ -215,7 +244,7 @@ export default function Settings() {
                   <p className="text-xs text-muted-foreground">Loading printers…</p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  Choose a printer for automatic receipts. <strong>Ethernet:</strong> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> in <code className="bg-muted px-1 rounded">server/.env</code> (use commas for multiple, e.g. <code className="bg-muted px-1 rounded">tcp://192.168.1.1:9100,tcp://192.168.1.2:9100</code>), then restart the server. Printers added in the system (DB) also appear here.
+                  <strong>Ethernet:</strong> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> in <code className="bg-muted px-1 rounded">server/.env</code> (comma-separated for multiple). Printers from DB also appear above.
                 </p>
               </div>
               <div className="space-y-2">
