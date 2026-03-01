@@ -16,10 +16,15 @@ export interface User {
   branchCode?: string;
 }
 
+export interface LoginResult {
+  success: boolean;
+  user?: User;
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
-  login: (employeeId: string, password: string) => Promise<boolean>;
+  login: (employeeId: string, password: string) => Promise<LoginResult>;
   logout: () => void;
   hasPermission: (permission: string) => boolean;
 }
@@ -36,7 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return saved ? JSON.parse(saved) : [];
   });
 
-  const login = async (employeeId: string, password: string): Promise<boolean> => {
+  const login = async (employeeId: string, password: string): Promise<LoginResult> => {
     const apiBase = import.meta.env.VITE_API_URL || "";
     const res = await fetch(`${apiBase}/api/auth/login`, {
       method: "POST",
@@ -46,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      return false;
+      return { success: false };
     }
 
     if (data.user && Array.isArray(data.permissions)) {
@@ -54,9 +59,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setPermissions(data.permissions);
       localStorage.setItem(STORAGE_USER, JSON.stringify(data.user));
       localStorage.setItem(STORAGE_PERMISSIONS, JSON.stringify(data.permissions));
-      return true;
+      return { success: true, user: data.user };
     }
-    return false;
+    return { success: false };
   };
 
   const logout = () => {

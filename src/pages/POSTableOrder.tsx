@@ -386,6 +386,65 @@ export default function POSTableOrder() {
     [table, user?.name, tableId]
   );
 
+  // Must be called unconditionally (before any early return) to satisfy Rules of Hooks
+  const printCashierOrderSlip = useCallback(
+    (items: OrderItem[], orderId: string) => {
+      if (!table || items.length === 0) return;
+      const win = window.open("", "_blank", "width=400,height=700");
+      if (!win) {
+        toast.error("Pop-up blocked. Allow pop-ups for cashier slip.");
+        return;
+      }
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
+      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      const slipSubtotal = items.reduce((s, i) => s + i.subtotal, 0);
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Order Slip</title>
+<style>
+  body { font-family: monospace; font-size: 13px; padding: 20px; max-width: 340px; margin: 0 auto; }
+  .center { text-align: center; }
+  .bold { font-weight: bold; }
+  .row { display: flex; justify-content: space-between; margin: 3px 0; }
+  .line { border-top: 1px dashed #aaa; margin: 8px 0; }
+  .sig { margin-top: 32px; border-top: 1px solid #000; padding-top: 4px; font-size: 11px; color: #555; }
+  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style>
+</head><body>
+  <div class="center">
+    <div class="bold" style="font-size:18px;">RABBIT ALLEY</div>
+    <div style="font-size:12px;">Bar &amp; Restaurant</div>
+  </div>
+  <div class="line"></div>
+  <div class="center bold" style="font-size:14px;margin:6px 0;">ORDER SLIP</div>
+  <div class="row"><span>Order No:</span><span>${orderId}</span></div>
+  <div class="row"><span>Date:</span><span>${dateStr}</span></div>
+  <div class="row"><span>Time:</span><span>${timeStr}</span></div>
+  <div class="row"><span>Area:</span><span>${table.area}</span></div>
+  <div class="row"><span>Table:</span><span>Table ${table.name}</span></div>
+  <div class="row"><span>Waiter:</span><span>${user?.name || "Staff"}</span></div>
+  <div class="line"></div>
+  <div class="bold" style="margin-bottom:4px;">ITEMS</div>
+  ${items.map((item) => `
+    <div class="row">
+      <span>${item.quantity}x ${item.name}${item.specialRequest ? ` <em style="font-size:11px;">(${item.specialRequest})</em>` : ""}</span>
+      <span>&#8369;${item.subtotal.toFixed(2)}</span>
+    </div>
+  `).join("")}
+  <div class="line"></div>
+  <div class="row bold"><span>SUBTOTAL:</span><span>&#8369;${slipSubtotal.toFixed(2)}</span></div>
+  <div class="line"></div>
+  <div style="font-size:11px;color:#888;text-align:center;">This is NOT the official receipt.<br>Final bill subject to taxes &amp; service charge.</div>
+  <div class="sig center">Customer Signature: ___________________________</div>
+</body></html>`;
+      win.document.write(html);
+      win.document.close();
+      win.focus();
+      setTimeout(() => { win.print(); win.close(); }, 150);
+    },
+    [table, user?.name]
+  );
+
   if (tablesLoading) {
     return (
       <AppLayout>
@@ -874,65 +933,6 @@ export default function POSTableOrder() {
       setProcessingPayment(false);
     }
   };
-
-  // Browser print fallback function
-  const printCashierOrderSlip = useCallback(
-    (items: OrderItem[], orderId: string) => {
-      if (!table || items.length === 0) return;
-      const win = window.open("", "_blank", "width=400,height=700");
-      if (!win) {
-        toast.error("Pop-up blocked. Allow pop-ups for cashier slip.");
-        return;
-      }
-      const now = new Date();
-      const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
-      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-      const slipSubtotal = items.reduce((s, i) => s + i.subtotal, 0);
-      const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Order Slip</title>
-<style>
-  body { font-family: monospace; font-size: 13px; padding: 20px; max-width: 340px; margin: 0 auto; }
-  .center { text-align: center; }
-  .bold { font-weight: bold; }
-  .row { display: flex; justify-content: space-between; margin: 3px 0; }
-  .line { border-top: 1px dashed #aaa; margin: 8px 0; }
-  .sig { margin-top: 32px; border-top: 1px solid #000; padding-top: 4px; font-size: 11px; color: #555; }
-  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-</style>
-</head><body>
-  <div class="center">
-    <div class="bold" style="font-size:18px;">RABBIT ALLEY</div>
-    <div style="font-size:12px;">Bar &amp; Restaurant</div>
-  </div>
-  <div class="line"></div>
-  <div class="center bold" style="font-size:14px;margin:6px 0;">ORDER SLIP</div>
-  <div class="row"><span>Order No:</span><span>${orderId}</span></div>
-  <div class="row"><span>Date:</span><span>${dateStr}</span></div>
-  <div class="row"><span>Time:</span><span>${timeStr}</span></div>
-  <div class="row"><span>Area:</span><span>${table.area}</span></div>
-  <div class="row"><span>Table:</span><span>Table ${table.name}</span></div>
-  <div class="row"><span>Waiter:</span><span>${user?.name || "Staff"}</span></div>
-  <div class="line"></div>
-  <div class="bold" style="margin-bottom:4px;">ITEMS</div>
-  ${items.map((item) => `
-    <div class="row">
-      <span>${item.quantity}x ${item.name}${item.specialRequest ? ` <em style="font-size:11px;">(${item.specialRequest})</em>` : ""}</span>
-      <span>&#8369;${item.subtotal.toFixed(2)}</span>
-    </div>
-  `).join("")}
-  <div class="line"></div>
-  <div class="row bold"><span>SUBTOTAL:</span><span>&#8369;${slipSubtotal.toFixed(2)}</span></div>
-  <div class="line"></div>
-  <div style="font-size:11px;color:#888;text-align:center;">This is NOT the official receipt.<br>Final bill subject to taxes &amp; service charge.</div>
-  <div class="sig center">Customer Signature: ___________________________</div>
-</body></html>`;
-      win.document.write(html);
-      win.document.close();
-      win.focus();
-      setTimeout(() => { win.print(); win.close(); }, 150);
-    },
-    [table, user?.name]
-  );
 
   const printReceiptViaBrowser = (receipt: {
     orderNumber: string;

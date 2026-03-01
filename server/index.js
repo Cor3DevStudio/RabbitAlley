@@ -72,8 +72,22 @@ function getWindowsPrinterList() {
   return [];
 }
 
-if (PRINTER_INTERFACE && (PRINTER_INTERFACE.toLowerCase().startsWith("tcp://") || PRINTER_INTERFACE.toLowerCase().startsWith("socket://"))) {
-  console.log("[Print] Ethernet printer configured →", PRINTER_INTERFACE);
+/** Parse PRINTER_INTERFACE: single value or comma-separated list (e.g. tcp://IP:9100,tcp://IP2:9100). Returns array of { interface, displayName }. */
+function getEthernetPrintersFromEnv() {
+  const raw = (PRINTER_INTERFACE || "").trim();
+  if (!raw) return [];
+  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return list
+    .filter((iface) => iface.toLowerCase().startsWith("tcp://") || iface.toLowerCase().startsWith("socket://"))
+    .map((iface) => ({
+      interface: iface,
+      displayName: iface.replace(/^socket:\/\//i, "").replace(/^tcp:\/\//i, ""),
+    }));
+}
+
+const ethernetPrintersFromEnv = getEthernetPrintersFromEnv();
+if (ethernetPrintersFromEnv.length > 0) {
+  console.log("[Print] Ethernet printer(s) from .env →", ethernetPrintersFromEnv.map((p) => p.interface).join(", "));
 }
 
 const app = express();
@@ -943,8 +957,8 @@ app.post("/api/tables/:tableId/pay-all", async (req, res) => {
 });
 
 // ---------- List printers (for POS Settings) ----------
-// Windows printers (from "printer" package or PowerShell) plus any Ethernet printer from PRINTER_INTERFACE (tcp://IP:9100).
-app.get("/api/print/printers", (req, res) => {
+// Windows printers + Ethernet from .env + printers added in DB (Settings / system).
+app.get("/api/print/printers", async (req, res) => {
   const printers = [];
   let error = null;
   try {
@@ -956,13 +970,53 @@ app.get("/api/print/printers", (req, res) => {
   } catch (e) {
     error = e.message || "Failed to get printers";
   }
-  // Add Ethernet/network printer from .env so it shows in Settings
-  const iface = (PRINTER_INTERFACE || "").trim();
-  if (iface && (iface.toLowerCase().startsWith("tcp://") || iface.toLowerCase().startsWith("socket://"))) {
-    const displayName = iface.replace(/^socket:\/\//i, "").replace(/^tcp:\/\//i, "");
+  // Add Ethernet/network printers from .env (single or comma-separated)
+  ethernetPrintersFromEnv.forEach(({ interface: iface, displayName }) => {
     printers.push({ name: iface, displayName: `Ethernet (${displayName})`, isDefault: false, isNetwork: true });
+  });
+  // Add printers from DB (added in system / Settings)
+  try {
+    const db = await getPool();
+    const [rows] = await db.execute(
+      "SELECT id, name, interface, type FROM printers WHERE active = 1 ORDER BY name"
+    );
+    rows.forEach((row) => {
+      const iface = row.interface;
+      const isNetwork = /^tcp:\/\//i.test(iface) || /^socket:\/\//i.test(iface);
+      printers.push({
+        name: iface,
+        displayName: row.name || iface,
+        isDefault: false,
+        isNetwork: !!isNetwork,
+        fromSystem: true,
+      });
+    });
+  } catch (e) {
+    // Table may not exist yet; ignore
   }
   res.json({ printers, error: error || undefined });
+});
+
+// ---------- Add printer (system) ----------
+app.post("/api/print/printers", async (req, res) => {
+  const { name, interface: iface, type: typeName } = req.body || {};
+  if (!name || !iface || typeof name !== "string" || typeof iface !== "string") {
+    return res.status(400).json({ error: "name and interface are required" });
+  }
+  const branchId = getBranchId(req);
+  try {
+    const db = await getPool();
+    await db.execute(
+      "INSERT INTO printers (name, interface, type, branch_id, active) VALUES (?, ?, ?, ?, 1)",
+      [name.trim(), iface.trim(), (typeName && String(typeName).trim()) || "epson", branchId]
+    );
+    res.json({ ok: true, message: "Printer added" });
+  } catch (e) {
+    if (e.code === "ER_NO_SUCH_TABLE") {
+      return res.status(503).json({ error: "Printers table not found. Run the schema migration that creates the printers table." });
+    }
+    res.status(500).json({ error: e.message || "Failed to add printer" });
+  }
 });
 
 // ---------- Print Receipt ----------
@@ -974,12 +1028,13 @@ app.post("/api/print/receipt", async (req, res) => {
 
   const driver = getPrinterDriver();
   const usePrinterName = (typeof printerName === "string" && printerName.trim()) ? printerName.trim() : null;
-  // If user selected the Ethernet printer (tcp://... or socket://...), use it as interface; otherwise Windows printer:Name
+  // If user selected a printer, use it (Ethernet tcp:// or Windows printer:Name). Else default: first Ethernet from .env or single PRINTER_INTERFACE.
+  const defaultFromEnv = ethernetPrintersFromEnv.length > 0 ? ethernetPrintersFromEnv[0].interface : (PRINTER_INTERFACE || "").trim() || undefined;
   const interfaceToUse = usePrinterName
     ? (usePrinterName.toLowerCase().startsWith("tcp://") || usePrinterName.toLowerCase().startsWith("socket://")
         ? usePrinterName
         : `printer:${usePrinterName}`)
-    : PRINTER_INTERFACE || undefined;
+    : defaultFromEnv;
   const needDriver = interfaceToUse && String(interfaceToUse).toLowerCase().startsWith("printer:");
 
   try {

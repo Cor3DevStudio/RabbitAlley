@@ -14,14 +14,20 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   
-  const { login, isAuthenticated } = useAuth();
+  const { login, isAuthenticated, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
   const from = (location.state as any)?.from?.pathname || "/dashboard";
 
+  // Staff (waiters) should land on POS, not dashboard or discounts
+  const getPostLoginPath = (role: string | undefined) => {
+    if (role === "Staff") return "/pos";
+    return from;
+  };
+
   if (isAuthenticated) {
-    return <Navigate to={from} replace />;
+    return <Navigate to={getPostLoginPath(user?.role)} replace />;
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -43,11 +49,12 @@ export default function Login() {
     }
 
     setIsLoading(true);
-    const success = await login(employeeId, password);
+    const result = await login(employeeId, password);
     setIsLoading(false);
 
-    if (success) {
-      navigate(from, { replace: true });
+    if (result.success) {
+      const targetPath = result.user?.role === "Staff" ? "/pos" : from;
+      navigate(targetPath, { replace: true });
     } else {
       setErrors(["Invalid Employee ID or Password"]);
     }

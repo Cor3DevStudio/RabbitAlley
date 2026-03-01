@@ -459,6 +459,22 @@ INSERT INTO settings (setting_key, setting_value, category, description) VALUES
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
 -- ============================================================================
+-- PRINTERS (network/USB printers added in the system — optional, .env also supported)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS printers (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(128) NOT NULL COMMENT 'Display name (e.g. Receipt Counter 1)',
+  interface VARCHAR(255) NOT NULL COMMENT 'tcp://IP:9100 or printer:WindowsPrinterName',
+  type VARCHAR(32) NOT NULL DEFAULT 'epson' COMMENT 'epson, star, brother, etc.',
+  branch_id INT UNSIGNED DEFAULT 1,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_printers_branch (branch_id),
+  KEY idx_printers_active (active)
+);
+
+-- ============================================================================
 -- PRODUCT AREA PRICES (Lounge, Club, LD - different price per area)
 -- ============================================================================
 

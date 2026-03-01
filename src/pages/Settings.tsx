@@ -215,7 +215,7 @@ export default function Settings() {
                   <p className="text-xs text-muted-foreground">Loading printers…</p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  Choose a printer for automatic receipts. <strong>Ethernet printers:</strong> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> in <code className="bg-muted px-1 rounded">server/.env</code> (e.g. <code className="bg-muted px-1 rounded">tcp://192.168.1.100:9100</code>), then restart the server — it will appear here as &quot;Ethernet (IP:9100)&quot;.
+                  Choose a printer for automatic receipts. <strong>Ethernet:</strong> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> in <code className="bg-muted px-1 rounded">server/.env</code> (use commas for multiple, e.g. <code className="bg-muted px-1 rounded">tcp://192.168.1.1:9100,tcp://192.168.1.2:9100</code>), then restart the server. Printers added in the system (DB) also appear here.
                 </p>
               </div>
               <div className="space-y-2">

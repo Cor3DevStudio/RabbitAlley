@@ -278,7 +278,9 @@ export const api = {
   },
   print: {
     printers: () =>
-      fetchApi<{ printers: Array<{ name: string; isDefault?: boolean }>; error?: string }>("/api/print/printers"),
+      fetchApi<{ printers: Array<{ name: string; isDefault?: boolean; displayName?: string; isNetwork?: boolean }>; error?: string }>("/api/print/printers"),
+    addPrinter: (body: { name: string; interface: string; type?: string }) =>
+      fetchApi<{ ok: boolean; message?: string; error?: string }>("/api/print/printers", { method: "POST", body: JSON.stringify(body) }),
     receipt: (
       receipt: {
         orderNumber: string;
