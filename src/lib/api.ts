@@ -165,6 +165,17 @@ export const api = {
       fetchApi<{ ok: boolean }>(`/api/orders/${orderId}/pay`, { method: "PATCH", body: JSON.stringify({ paymentMethod }) }),
     void: (orderId: string, data: { employeeId: string; password: string; reason?: string }) =>
       fetchApi<{ ok: boolean; voidedByName: string }>(`/api/orders/${orderId}/void`, { method: "POST", body: JSON.stringify(data) }),
+    detail: (orderId: string) =>
+      fetchApi<{
+        id: string; orderNumber: string; table: string; area: string; employee: string;
+        subtotal: number; discount: number; tax: number; total: number;
+        status: string; paymentMethod: string | null; createdAt: string; updatedAt: string;
+        items: Array<{
+          id: string; name: string; quantity: number; unitPrice: number; subtotal: number;
+          discount: number; department: string; specialRequest: string | null;
+          isComplimentary: boolean; isVoided: boolean; servedByName: string | null;
+        }>;
+      }>(`/api/orders/${orderId}/detail`),
   },
   orderItems: {
     void: (itemId: string, data: { employeeId: string; password: string }) =>
@@ -306,6 +317,38 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ receipt, printerName: printerName || undefined }),
       }),
+    deptReceipt: (body: {
+      dept: string;
+      title: string;
+      subtitle: string;
+      items: Array<{ name: string; quantity: number; servedByName?: string; specialRequest?: string | null }>;
+      table: string;
+      area: string;
+      encoder: string;
+      orderNumber: string;
+      date: string;
+      time: string;
+      printerName?: string | null;
+    }) =>
+      fetchApi<{ ok: boolean; error?: string; fallback?: boolean }>("/api/print/dept-receipt", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    orderSlip: (body: {
+      orderId: string;
+      table: string;
+      area: string;
+      waiter: string;
+      date: string;
+      time: string;
+      subtotal: number;
+      items: Array<{ name: string; quantity: number; subtotal: number; specialRequest?: string | null }>;
+      printerName?: string | null;
+    }) =>
+      fetchApi<{ ok: boolean; error?: string }>("/api/print/order-slip", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
     payslip: (payslip: {
       employeeId: string; name: string; periodFrom: string; periodTo: string;
       allowance: number; hours: number; perHour: number; commission: number; incentives: number; adjustments: number; deductions: number;
@@ -430,8 +473,6 @@ export const api = {
       fetchApi<{ ok: boolean; message: string }>("/api/tables/transfer", { method: "POST", body: JSON.stringify(data) }),
     merge: (data: { sourceOrderId: string; targetOrderId: string; transferredBy: string; reason?: string }) =>
       fetchApi<{ ok: boolean; message: string }>("/api/tables/merge", { method: "POST", body: JSON.stringify(data) }),
-    transfer: (data: { orderId: string; fromTable: string; toTable: string; transferredBy: string; reason?: string }) =>
-      fetchApi<{ ok: boolean; message: string }>("/api/tables/transfer", { method: "POST", body: JSON.stringify(data) }),
     getTransfers: (orderId: string) =>
       fetchApi<TableTransfer[]>(`/api/tables/transfers/${orderId}`),
   },

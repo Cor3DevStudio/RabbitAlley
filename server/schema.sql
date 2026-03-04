@@ -667,7 +667,14 @@ INSERT INTO users (employee_id, name, email, password_hash, role_id, branch_id, 
 
 -- BARTENDERS (role_id = 3 - Operations Staff / Cashier)
 ('BAR001', 'Toyskie', 'toyskie@rabbitalley.local', '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 3, 1, 'Toyskie', 400, 60, 1),
-('BAR002', 'Romgel', 'romgel@rabbitalley.local', '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 3, 1, 'Romgel', 400, 60, 1)
+('BAR002', 'Romgel', 'romgel@rabbitalley.local', '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 3, 1, 'Romgel', 400, 60, 1),
+
+-- MODELS / LADIES (role_id = 2 - Staff; these are the LD hostesses selectable in the POS)
+('MDL001', 'Angelica Santos',  'angelica@rabbitalley.local', '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 2, 1, 'Angel',  300, 0, 1),
+('MDL002', 'Bianca Reyes',     'bianca@rabbitalley.local',   '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 2, 1, 'Bianca', 300, 0, 1),
+('MDL003', 'Clarisse Dela Cruz','clarisse@rabbitalley.local','$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 2, 1, 'Cla',    300, 0, 1),
+('MDL004', 'Diana Villanueva', 'diana@rabbitalley.local',    '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 2, 1, 'Diana',  300, 0, 1),
+('MDL005', 'Elena Cruz',       'elena@rabbitalley.local',    '$2b$10$B4oc/jK4Bx5OBvUzeDu7Berro8sqOpPnCKkigopy0Eg2FF3FGmKSG', 2, 1, 'Elena',  300, 0, 1)
 
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
@@ -910,7 +917,24 @@ INSERT INTO products (sku, name, description, category, department, price, cost,
 ('AYCE-S04', 'Side - Coleslaw', 'AYCE Sunday Side', 'AYCE Sides', 'Kitchen', 0.00, 0.00, 0.00, 'active'),
 ('AYCE-S05', 'Side - Fries', 'AYCE Sunday Side', 'AYCE Sides', 'Kitchen', 0.00, 0.00, 0.00, 'active'),
 ('AYCE-S06', 'Side - Iced Tea', 'AYCE Sunday Side', 'AYCE Sides', 'Bar', 0.00, 0.00, 0.00, 'active'),
-('AYCE-S07', 'Side - Rice', 'AYCE Sunday Side', 'AYCE Sides', 'Kitchen', 0.00, 0.00, 0.00, 'active')
+('AYCE-S07', 'Side - Rice', 'AYCE Sunday Side', 'AYCE Sides', 'Kitchen', 0.00, 0.00, 0.00, 'active'),
+
+-- LADIES DRINK (LD) - Commission-based drinks ordered for hostess/model
+('LD-001', 'San Mig Light',         'Ladies Drink - Beer', 'Ladies Drink', 'LD', 350.00, 150.00, 50.00, 'active'),
+('LD-002', 'San Mig Pale Pilsen',   'Ladies Drink - Beer', 'Ladies Drink', 'LD', 350.00, 150.00, 50.00, 'active'),
+('LD-003', 'Red Horse',             'Ladies Drink - Beer', 'Ladies Drink', 'LD', 350.00, 150.00, 50.00, 'active'),
+('LD-004', 'Coke Float',            'Ladies Drink - Softdrink', 'Ladies Drink', 'LD', 250.00, 100.00, 40.00, 'active'),
+('LD-005', 'Iced Tea',              'Ladies Drink - Non-Alcoholic', 'Ladies Drink', 'LD', 200.00, 80.00, 35.00, 'active'),
+('LD-006', 'House Wine (Red)',      'Ladies Drink - Wine', 'Ladies Drink', 'LD', 450.00, 200.00, 70.00, 'active'),
+('LD-007', 'House Wine (White)',    'Ladies Drink - Wine', 'Ladies Drink', 'LD', 450.00, 200.00, 70.00, 'active'),
+('LD-008', 'Vodka Soda',            'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 400.00, 180.00, 60.00, 'active'),
+('LD-009', 'Gin Tonic',             'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 400.00, 180.00, 60.00, 'active'),
+('LD-010', 'Margarita',             'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 500.00, 220.00, 75.00, 'active'),
+('LD-011', 'Mojito',                'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 500.00, 220.00, 75.00, 'active'),
+('LD-012', 'Strawberry Daiquiri',   'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 500.00, 220.00, 75.00, 'active'),
+('LD-013', 'Sex on the Beach',      'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 550.00, 240.00, 80.00, 'active'),
+('LD-014', 'Blue Lagoon',           'Ladies Drink - Cocktail', 'Ladies Drink', 'LD', 550.00, 240.00, 80.00, 'active'),
+('LD-015', 'Tequila Shot',          'Ladies Drink - Shot', 'Ladies Drink', 'LD', 300.00, 120.00, 50.00, 'active')
 
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
@@ -984,6 +1008,13 @@ ON DUPLICATE KEY UPDATE
 -- BARTENDERS:
 --   BAR001 - Toyskie
 --   BAR002 - Romgel
+--
+-- MODELS / LADIES (LD hostesses, selectable in POS Ladies Drink):
+--   MDL001 - Angelica Santos  (Angel)
+--   MDL002 - Bianca Reyes     (Bianca)
+--   MDL003 - Clarisse Dela Cruz (Cla)
+--   MDL004 - Diana Villanueva (Diana)
+--   MDL005 - Elena Cruz       (Elena)
 --
 -- To start:
 --   1. Run this SQL script in HeidiSQL

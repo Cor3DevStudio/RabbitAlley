@@ -14,11 +14,14 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { FileText, FileSpreadsheet, File, Filter, Calculator, ShoppingBag, DollarSign, Percent, Receipt, Users, CheckCircle, Printer, Download, Plus, ChevronDown, X } from "lucide-react";
+import { FileText, FileSpreadsheet, File, Filter, Calculator, ShoppingBag, DollarSign, Percent, Receipt, Users, CheckCircle, Printer, Download, Plus, ChevronDown, X, Eye, MapPin, Clock, CreditCard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -57,6 +60,8 @@ interface PayrollRow {
   budget: number;
   commission: number;
   ldCount?: number;
+  /** Total LD sales amount (sum of LD drink prices for this lady) */
+  ldAmount?: number;
   incentives: number;
   adjustments: number;
   deductions: number;
@@ -238,7 +243,7 @@ const PayrollTableRow = memo(function PayrollTableRow({
       <TableCell className="whitespace-nowrap text-muted-foreground text-sm">{row.timeIn ?? "—"}</TableCell>
       <TableCell className="text-right">{formatCurrency(row.budget)}</TableCell>
       <TableCell className="text-center font-semibold tabular-nums">{row.ldCount ?? 0}</TableCell>
-      <TableCell className="text-right">{formatCurrency(row.commission)}</TableCell>
+      <TableCell className="text-right">{formatCurrency((row.ldCount ?? 0) * 100)}</TableCell>
       <TableCell className="text-right tabular-nums">{formatCurrency(row.incentives)}</TableCell>
       <TableCell className="p-1">
         <BreakdownCell
@@ -311,13 +316,15 @@ export default function Reports() {
   const [salesList, setSalesList] = useState<OrderRow[]>([]);
   const [salesSummary, setSalesSummary] = useState({ totalOrders: 0, totalSales: 0, totalDiscounts: 0, totalTax: 0 });
   const [payroll, setPayroll] = useState<PayrollRow[]>([]);
-  const [payrollSummary, setPayrollSummary] = useState({ totalEmployees: 0, totalPayout: 0, totalIncentives: 0, totalDeductions: 0 });
+  const [payrollSummary, setPayrollSummary] = useState({ totalEmployees: 0, totalPayout: 0, totalIncentives: 0, totalDeductions: 0, totalLd: 0 });
   const [loadingSales, setLoadingSales] = useState(false);
   const [loadingPayroll, setLoadingPayroll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [computeModalOpen, setComputeModalOpen] = useState(false);
   const [computeProgress, setComputeProgress] = useState(0);
   const [computeStep, setComputeStep] = useState("");
+  const [orderDetail, setOrderDetail] = useState<Awaited<ReturnType<typeof api.orders.detail>> | null>(null);
+  const [orderDetailLoading, setOrderDetailLoading] = useState(false);
 
   const loadSalesStable = useCallback(async () => {
     if (dateFrom > dateTo) return;
@@ -344,7 +351,8 @@ export default function Reports() {
         const incB = (p as { incentivesBreakdown?: BreakdownItem[] }).incentivesBreakdown ?? null;
         const otherInc = Array.isArray(incB) ? incB.reduce((s, x) => s + (x.amount ?? 0), 0) : 0;
         const budget = Number(p.allowance ?? 0);
-        const commission = Number(p.commission ?? 0);
+        const ldCount = Number((p as { ldCount?: number }).ldCount ?? 0);
+        const commission = ldCount * 100;
         const incentives = Number(p.incentives ?? 0);
         const adjustments = Number(p.adjustments ?? 0);
         const deductions = Number(p.deductions ?? 0);
@@ -356,7 +364,8 @@ export default function Reports() {
           timeIn: (p as { timeIn?: string | null }).timeIn ?? null,
           budget,
           commission,
-          ldCount: Number((p as { ldCount?: number }).ldCount ?? 0),
+          ldCount,
+          ldAmount: Number((p as { ldAmount?: number }).ldAmount ?? 0),
           incentives,
           adjustments,
           deductions,
@@ -377,9 +386,10 @@ export default function Reports() {
             totalPayout: acc.totalPayout + calculatedPayout,
             totalIncentives: acc.totalIncentives + row.incentives,
             totalDeductions: acc.totalDeductions + row.deductions,
+            totalLd: acc.totalLd + (row.ldCount ?? 0),
           };
         },
-        { totalEmployees: 0, totalPayout: 0, totalIncentives: 0, totalDeductions: 0 }
+        { totalEmployees: 0, totalPayout: 0, totalIncentives: 0, totalDeductions: 0, totalLd: 0 }
       );
       setPayrollSummary(summary);
     } catch (e) {
@@ -393,6 +403,19 @@ export default function Reports() {
     if (activeTab === "sales") loadSalesStable();
     else if (activeTab === "payroll") loadPayrollStable();
   }, [activeTab, dateFrom, dateTo, loadSalesStable, loadPayrollStable]);
+
+  const handleViewOrder = useCallback(async (orderId: string) => {
+    setOrderDetailLoading(true);
+    setOrderDetail(null);
+    try {
+      const detail = await api.orders.detail(orderId);
+      setOrderDetail(detail);
+    } catch {
+      toast.error("Failed to load order details");
+    } finally {
+      setOrderDetailLoading(false);
+    }
+  }, []);
 
   const handleFilter = useCallback(() => {
     if (dateFrom > dateTo) {
@@ -472,7 +495,7 @@ export default function Reports() {
             p.timeIn ?? "",
             p.budget,
             p.ldCount ?? 0,
-            p.commission,
+            (p.ldCount ?? 0) * 100,
             p.incentives,
             otherInc(p),
             p.adjustments,
@@ -493,7 +516,7 @@ export default function Reports() {
               "Time In": p.timeIn ?? "",
               Budget: p.budget,
               "Total LD": p.ldCount ?? 0,
-              "Total LD Commission": p.commission,
+              "Total LD Commission": (p.ldCount ?? 0) * 100,
               Incentives: p.incentives,
               "Other Incentives": otherInc(p),
               Adjustments: p.adjustments,
@@ -522,7 +545,7 @@ export default function Reports() {
               p.timeIn ?? "—",
               p.budget.toFixed(2),
               String(p.ldCount ?? 0),
-              p.commission.toFixed(2),
+              ((p.ldCount ?? 0) * 100).toFixed(2),
               p.incentives.toFixed(2),
               otherInc(p).toFixed(2),
               p.adjustments.toFixed(2),
@@ -992,7 +1015,11 @@ export default function Reports() {
                   </TableRow>
                 ) : (
                   salesList.map((order) => (
-                    <TableRow key={order.id}>
+                    <TableRow
+                      key={order.id}
+                      className="cursor-pointer hover:bg-muted/60 transition-colors"
+                      onClick={() => handleViewOrder(order.id)}
+                    >
                       <TableCell className="font-mono text-xs">{order.id}</TableCell>
                       <TableCell>{order.area}</TableCell>
                       <TableCell>{order.table}</TableCell>
@@ -1022,7 +1049,7 @@ export default function Reports() {
 
       {activeTab === "payroll" && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             <StatCard
               label="Total Employees"
               value={payrollSummary.totalEmployees}
@@ -1034,9 +1061,14 @@ export default function Reports() {
               icon={<DollarSign className="w-5 h-5" />}
             />
             <StatCard
+              label="Total LD"
+              value={payrollSummary.totalLd}
+              icon={<ShoppingBag className="w-5 h-5" />}
+            />
+            <StatCard
               label="Total Incentives"
               value={formatCurrency(payrollSummary.totalIncentives)}
-              icon={<ShoppingBag className="w-5 h-5" />}
+              icon={<CheckCircle className="w-5 h-5" />}
             />
             <StatCard
               label="Total Deductions"
@@ -1045,11 +1077,11 @@ export default function Reports() {
             />
           </div>
 
-          <div className="rounded-lg border border-border overflow-hidden max-h-[500px] overflow-y-auto overflow-x-auto">
-          <Table>
-            <TableHeader className="sticky top-0 bg-muted/95 z-10">
-              <TableRow>
-                <TableHead>Employee</TableHead>
+          <div className="rounded-lg border border-border overflow-hidden">
+          <Table wrapperClassName="max-h-[500px] overflow-y-auto overflow-x-auto">
+            <TableHeader>
+              <TableRow className="border-b [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:bg-muted [&>th]:shadow-[0_1px_0_0_hsl(var(--border))]">
+                <TableHead className="whitespace-nowrap">Employee</TableHead>
                 <TableHead className="whitespace-nowrap">Employee ID</TableHead>
                 <TableHead className="whitespace-nowrap">Time In</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Budget</TableHead>
@@ -1090,6 +1122,141 @@ export default function Reports() {
         </div>
         </>
       )}
+
+      {/* Order Detail Modal */}
+      <Dialog open={!!orderDetail || orderDetailLoading} onOpenChange={(open) => { if (!open) setOrderDetail(null); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="w-5 h-5 text-primary" />
+              Order History
+              {orderDetail && (
+                <span className="text-muted-foreground font-normal text-sm ml-1">
+                  #{orderDetail.id}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+
+          {orderDetailLoading ? (
+            <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
+              Loading order details…
+            </div>
+          ) : orderDetail ? (
+            <div className="flex flex-col gap-4 overflow-y-auto">
+              {/* Order meta */}
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <MapPin className="w-4 h-4 shrink-0" />
+                  <span>{orderDetail.area} — {orderDetail.table}</span>
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Users className="w-4 h-4 shrink-0" />
+                  <span>{orderDetail.employee || "—"}</span>
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Clock className="w-4 h-4 shrink-0" />
+                  <span>{new Date(orderDetail.createdAt).toLocaleString()}</span>
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <CreditCard className="w-4 h-4 shrink-0" />
+                  <span className="capitalize">{orderDetail.paymentMethod || "—"}</span>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Items list */}
+              <div className="rounded-lg border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/60">
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-center w-16">Qty</TableHead>
+                      <TableHead className="text-right w-24">Unit Price</TableHead>
+                      <TableHead className="text-right w-24">Subtotal</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {orderDetail.items.map((item) => (
+                      <TableRow
+                        key={item.id}
+                        className={cn(item.isVoided && "opacity-50")}
+                      >
+                        <TableCell>
+                          <div className="flex flex-col gap-0.5">
+                            <span className={cn("font-medium text-sm", item.isVoided && "line-through text-muted-foreground")}>
+                              {item.name}
+                              {item.isComplimentary && (
+                                <span className="ml-1.5 text-xs text-purple-600 font-normal">(Complimentary)</span>
+                              )}
+                              {item.isVoided && (
+                                <span className="ml-1.5 text-xs text-destructive font-normal">VOIDED</span>
+                              )}
+                            </span>
+                            {item.servedByName && (
+                              <span className="text-xs text-violet-600">Lady: {item.servedByName}</span>
+                            )}
+                            {item.specialRequest && (
+                              <span className="text-xs text-amber-600 italic">"{item.specialRequest}"</span>
+                            )}
+                            {item.discount > 0 && (
+                              <span className="text-xs text-green-600">Discount: -{formatCurrency(item.discount)}</span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center tabular-nums">{item.quantity}</TableCell>
+                        <TableCell className="text-right tabular-nums">{formatCurrency(item.unitPrice)}</TableCell>
+                        <TableCell className={cn("text-right tabular-nums font-medium", item.isVoided && "line-through text-muted-foreground")}>
+                          {formatCurrency(item.subtotal)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Totals */}
+              <div className="rounded-lg border p-4 space-y-2 text-sm">
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Subtotal</span>
+                  <span>{formatCurrency(orderDetail.subtotal)}</span>
+                </div>
+                {orderDetail.discount > 0 && (
+                  <div className="flex justify-between text-green-600">
+                    <span>Discount</span>
+                    <span>-{formatCurrency(orderDetail.discount)}</span>
+                  </div>
+                )}
+                {orderDetail.tax > 0 && (
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Tax</span>
+                    <span>{formatCurrency(orderDetail.tax)}</span>
+                  </div>
+                )}
+                <Separator />
+                <div className="flex justify-between font-bold text-base">
+                  <span>Total</span>
+                  <span>{formatCurrency(orderDetail.total)}</span>
+                </div>
+              </div>
+
+              {/* Status badge */}
+              <div className="flex justify-end">
+                <Badge className={cn(
+                  orderDetail.status === "paid"
+                    ? "bg-success/20 text-success border-success/30"
+                    : orderDetail.status === "voided"
+                      ? "bg-destructive/20 text-destructive border-destructive/30"
+                      : "bg-warning/20 text-warning border-warning/30"
+                )}>
+                  {orderDetail.status.toUpperCase()}
+                </Badge>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {/* Compute Payout Modal */}
       <Dialog open={computeModalOpen} onOpenChange={() => {}}>

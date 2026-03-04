@@ -30,3 +30,31 @@ export function getReceiptPrinterForArea(area: string | undefined): string | nul
   if (value && value.trim()) return value.trim();
   return localStorage.getItem(RECEIPT_PRINTER_STORAGE_KEY);
 }
+
+// ── Department (chit) printers: BAR, KITCHEN, LD ─────────────────────────────
+/** Per-dept chit printers. Value: JSON object { Bar?: string, Kitchen?: string, LD?: string }. */
+export const DEPT_PRINTERS_KEY = "pos_dept_printers";
+
+export const POS_DEPTS = ["Bar", "Kitchen", "LD"] as const;
+export type PosDept = (typeof POS_DEPTS)[number];
+
+export type DeptPrinters = Partial<Record<PosDept, string>>;
+
+function parseDeptPrinters(): DeptPrinters {
+  try {
+    const raw = localStorage.getItem(DEPT_PRINTERS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return { Bar: parsed.Bar ?? "", Kitchen: parsed.Kitchen ?? "", LD: parsed.LD ?? "" };
+  } catch {
+    return {};
+  }
+}
+
+/** Get the chit printer for a department (Bar, Kitchen, LD). Returns null if not set. */
+export function getDeptPrinter(dept: string | undefined): string | null {
+  if (!dept) return null;
+  const p = parseDeptPrinters();
+  const value = p[dept as PosDept];
+  return value && value.trim() ? value.trim() : null;
+}

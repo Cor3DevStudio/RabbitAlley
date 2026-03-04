@@ -113,6 +113,23 @@ async function getPool() {
   return pool;
 }
 
+/**
+ * Run a query that uses oi.is_voided; if the column doesn't exist, re-run without it.
+ * Returns the rows from whichever version succeeds.
+ */
+async function queryWithVoidFallback(db, sqlWithVoid, sqlWithout, params) {
+  try {
+    const [rows] = await db.execute(sqlWithVoid, params);
+    return rows;
+  } catch (e) {
+    if (e.code === "ER_BAD_FIELD_ERROR") {
+      const [rows] = await db.execute(sqlWithout, params);
+      return rows;
+    }
+    throw e;
+  }
+}
+
 function row(r) {
   return r && typeof r === "object" ? Object.fromEntries(
     Object.entries(r).map(([k, v]) => [k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), v])
@@ -410,21 +427,17 @@ app.get("/api/dashboard/stats", async (req, res) => {
       [branchId, today]
     );
     let todaysLdSales = 0;
-    try {
-      const [ldRows] = await db.execute(
-        `SELECT COALESCE(SUM(oi.subtotal), 0) AS s FROM order_items oi
+    {
+      const ldRows = await queryWithVoidFallback(
+        db,
+        `SELECT COALESCE(SUM(oi.subtotal),0) AS s FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
          WHERE o.branch_id = ? AND o.order_date = ? AND o.status = 'paid'
-           AND oi.department = 'LD' AND COALESCE(oi.is_voided, 0) = 0`,
-        [branchId, today]
-      );
-      todaysLdSales = Number(ldRows[0]?.s ?? 0);
-    } catch (_) {
-      // is_voided column may not exist on older DBs
-      const [ldRows] = await db.execute(
-        `SELECT COALESCE(SUM(oi.subtotal), 0) AS s FROM order_items oi
+           AND oi.department = 'LD' AND COALESCE(oi.is_voided,0) = 0`,
+        `SELECT COALESCE(SUM(oi.subtotal),0) AS s FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
-         WHERE o.branch_id = ? AND o.order_date = ? AND o.status = 'paid' AND oi.department = 'LD'`,
+         WHERE o.branch_id = ? AND o.order_date = ? AND o.status = 'paid'
+           AND oi.department = 'LD'`,
         [branchId, today]
       );
       todaysLdSales = Number(ldRows[0]?.s ?? 0);
@@ -651,6 +664,70 @@ app.post("/api/orders/:id/items", async (req, res) => {
   } catch (err) {
     console.error("Add order items error:", err);
     res.status(500).json({ error: "Failed to add items to order" });
+  }
+});
+
+// Get single order detail with all items (for Sales Report history view)
+app.get("/api/orders/:orderId/detail", async (req, res) => {
+  const { orderId } = req.params;
+  // Strip "ORD-" prefix if present (sales report formats IDs as ORD-XX)
+  const numericId = String(orderId).replace(/^ORD-/i, "");
+  try {
+    const db = await getPool();
+    const [orders] = await db.execute(
+      `SELECT o.id, t.name AS tableName, t.area,
+              o.employee_id, u.name AS employee,
+              o.subtotal, o.discount, o.tax, o.total,
+              o.status, o.payment_method, o.created_at, o.updated_at
+       FROM orders o
+       LEFT JOIN pos_tables t ON t.branch_id = o.branch_id AND t.id = o.table_id
+       LEFT JOIN users u ON u.employee_id = o.employee_id
+       WHERE o.id = ?`,
+      [numericId]
+    );
+    if (!orders.length) return res.status(404).json({ error: "Order not found" });
+    const order = orders[0];
+    const [items] = await db.execute(
+      `SELECT oi.id, oi.product_name AS name, oi.quantity, oi.unit_price, oi.subtotal,
+              oi.discount, oi.department, oi.special_request,
+              oi.is_complimentary, oi.is_voided,
+              u.name AS servedByName
+       FROM order_items oi
+       LEFT JOIN users u ON u.id = oi.served_by
+       WHERE oi.order_id = ?
+       ORDER BY oi.id`,
+      [numericId]
+    );
+    res.json({
+      id: "ORD-" + order.id,
+      table: order.tableName,
+      area: order.area,
+      employee: order.employee || order.employee_id || "—",
+      subtotal: Number(order.subtotal),
+      discount: Number(order.discount ?? 0),
+      tax: Number(order.tax ?? 0),
+      total: Number(order.total),
+      status: order.status,
+      paymentMethod: order.payment_method ?? null,
+      createdAt: order.created_at,
+      updatedAt: order.updated_at,
+      items: items.map((i) => ({
+        id: String(i.id),
+        name: i.name,
+        quantity: Number(i.quantity),
+        unitPrice: Number(i.unit_price),
+        subtotal: Number(i.subtotal),
+        discount: Number(i.discount ?? 0),
+        department: i.department,
+        specialRequest: i.special_request ?? null,
+        isComplimentary: !!i.is_complimentary,
+        isVoided: !!i.is_voided,
+        servedByName: i.servedByName ?? null,
+      })),
+    });
+  } catch (err) {
+    console.error("Order detail error:", err);
+    res.status(500).json({ error: "Failed to load order detail" });
   }
 });
 
@@ -1145,6 +1222,169 @@ app.post("/api/print/receipt", async (req, res) => {
     const isTimeout = /timeout|ETIMEDOUT/i.test(String(err.message));
     console.warn(isTimeout ? "Receipt: printer unavailable (timeout). Use browser print." : "Print error:", err.message);
     res.json({ ok: false, error: err.message, fallback: true });
+  }
+});
+
+// ---------- Print Department Chit (Kitchen / Bar / LD) ----------
+// Body: { dept, title, subtitle, items: [{name, quantity, servedByName?, specialRequest?}], table, area, encoder, orderNumber, date, time, printerName? }
+app.post("/api/print/dept-receipt", async (req, res) => {
+  const { dept, title, subtitle, items, table: tableStr, area, encoder, orderNumber, date, time, printerName } = req.body || {};
+  if (!dept || !items || !Array.isArray(items)) {
+    return res.status(400).json({ error: "dept and items are required" });
+  }
+
+  const driver = getPrinterDriver();
+  const usePrinterName = (typeof printerName === "string" && printerName.trim()) ? printerName.trim() : null;
+  const defaultFromEnv = ethernetPrintersFromEnv.length > 0 ? ethernetPrintersFromEnv[0].interface : (PRINTER_INTERFACE || "").trim() || undefined;
+  const interfaceToUse = usePrinterName
+    ? (usePrinterName.toLowerCase().startsWith("tcp://") || usePrinterName.toLowerCase().startsWith("socket://")
+        ? usePrinterName
+        : `printer:${usePrinterName}`)
+    : defaultFromEnv;
+  const needDriver = interfaceToUse && String(interfaceToUse).toLowerCase().startsWith("printer:");
+
+  if (!interfaceToUse) {
+    return res.json({ ok: false, error: "No printer configured for this department.", fallback: true });
+  }
+
+  try {
+    if (needDriver && !driver) {
+      return res.json({ ok: false, error: "USB print requires printer package.", fallback: true });
+    }
+    const printer = new ThermalPrinter.printer({
+      type: printerType,
+      interface: interfaceToUse,
+      driver: driver || undefined,
+      options: printerOptions,
+      characterSet: "PC437_USA",
+      removeSpecialCharacters: false,
+      lineCharacter: "-",
+      width: 42,
+    });
+
+    // Header
+    printer.alignCenter();
+    printer.bold(true);
+    printer.setTextSize(1, 1);
+    printer.println(String(title || dept).toUpperCase());
+    printer.bold(false);
+    printer.setTextNormal();
+    if (subtitle) printer.println(subtitle);
+    printer.drawLine();
+
+    // Order info
+    printer.alignLeft();
+    printer.println(`Order : ${orderNumber || ""}`);
+    printer.println(`${date || ""}  ${time || ""}  ${area || ""} T${tableStr || ""}`);
+    printer.drawLine();
+
+    // Items
+    printer.bold(true);
+    printer.println("ITEMS");
+    printer.bold(false);
+
+    if (dept === "LD") {
+      // Group by lady name
+      const byLady = {};
+      for (const item of items) {
+        const key = item.servedByName || "Unassigned";
+        if (!byLady[key]) byLady[key] = [];
+        byLady[key].push(item);
+      }
+      for (const [lady, ladyItems] of Object.entries(byLady)) {
+        printer.bold(true);
+        printer.println(`[${lady}]`);
+        printer.bold(false);
+        for (const item of ladyItems) {
+          const note = item.specialRequest ? ` (${item.specialRequest})` : "";
+          printer.println(`  ${item.quantity}x ${item.name}${note}`);
+        }
+      }
+    } else {
+      for (const item of items) {
+        const note = item.specialRequest ? ` (${item.specialRequest})` : "";
+        const server = item.servedByName ? ` [${item.servedByName}]` : "";
+        printer.println(`${item.quantity}x ${item.name}${server}${note}`);
+      }
+    }
+
+    printer.drawLine();
+    printer.println(`Encoder: ${encoder || ""}`);
+    printer.cut();
+    await printer.execute();
+    console.log(`[Print] Dept chit (${dept}) printed to ${interfaceToUse}`);
+    res.json({ ok: true, message: `${dept} chit printed` });
+  } catch (err) {
+    const isTimeout = /timeout|ETIMEDOUT/i.test(String(err.message));
+    console.warn(isTimeout ? `Dept chit (${dept}): printer unavailable.` : `Dept chit error:`, err.message);
+    res.json({ ok: false, error: err.message, fallback: true });
+  }
+});
+
+// ---------- Print Order Slip (cashier chit sent to Bar/cashier printer) ----------
+app.post("/api/print/order-slip", async (req, res) => {
+  const { orderId, table: tableStr, area, waiter, date, time, subtotal, items, printerName } = req.body || {};
+  if (!items || !Array.isArray(items)) return res.status(400).json({ error: "items required" });
+
+  const driver = getPrinterDriver();
+  const usePrinterName = (typeof printerName === "string" && printerName.trim()) ? printerName.trim() : null;
+  const defaultFromEnv = ethernetPrintersFromEnv.length > 0 ? ethernetPrintersFromEnv[0].interface : (PRINTER_INTERFACE || "").trim() || undefined;
+  const interfaceToUse = usePrinterName
+    ? (usePrinterName.toLowerCase().startsWith("tcp://") || usePrinterName.toLowerCase().startsWith("socket://")
+        ? usePrinterName : `printer:${usePrinterName}`)
+    : defaultFromEnv;
+
+  if (!interfaceToUse) return res.json({ ok: false, error: "No printer configured." });
+
+  try {
+    if (interfaceToUse.toLowerCase().startsWith("printer:") && !driver) {
+      return res.json({ ok: false, error: "USB print requires printer package.", fallback: true });
+    }
+    const printer = new ThermalPrinter.printer({
+      type: printerType, interface: interfaceToUse, driver: driver || undefined,
+      options: printerOptions, characterSet: "PC437_USA", removeSpecialCharacters: false,
+      lineCharacter: "-", width: 42,
+    });
+    printer.alignCenter();
+    printer.bold(true);
+    printer.println("RABBIT ALLEY");
+    printer.bold(false);
+    printer.println("Bar & Restaurant");
+    printer.drawLine();
+    printer.bold(true);
+    printer.println("ORDER SLIP");
+    printer.bold(false);
+    printer.alignLeft();
+    printer.println(`Order : ${orderId || ""}`);
+    printer.println(`${date || ""}  ${time || ""}  ${area || ""} T${tableStr || ""}`);
+    printer.println(`Waiter: ${waiter || ""}`);
+    printer.drawLine();
+    printer.bold(true);
+    printer.println("ITEMS");
+    printer.bold(false);
+    for (const item of items) {
+      const note = item.specialRequest ? ` (${item.specialRequest})` : "";
+      const price = `P${Number(item.subtotal).toFixed(2)}`;
+      const label = `${item.quantity}x ${item.name}${note}`;
+      const pad = Math.max(1, 42 - label.length - price.length);
+      printer.println(label + " ".repeat(pad) + price);
+    }
+    printer.drawLine();
+    const subStr = `P${Number(subtotal).toFixed(2)}`;
+    const subPad = Math.max(1, 42 - "SUBTOTAL:".length - subStr.length);
+    printer.bold(true);
+    printer.println("SUBTOTAL:" + " ".repeat(subPad) + subStr);
+    printer.bold(false);
+    printer.alignCenter();
+    printer.println("Not official receipt.");
+    printer.println("Subject to tax & service charge.");
+    printer.println("Signature: ____________________");
+    printer.cut();
+    await printer.execute();
+    res.json({ ok: true });
+  } catch (err) {
+    console.warn("Order slip print error:", err.message);
+    res.json({ ok: false, error: err.message });
   }
 });
 
@@ -1877,19 +2117,35 @@ app.get("/api/reports/payroll", async (req, res) => {
       if (!v) return null;
       try { return Array.isArray(typeof v === "string" ? JSON.parse(v) : v) ? (typeof v === "string" ? JSON.parse(v) : v) : null; } catch (_) { return null; }
     };
-    // Get LD drink count per staff for this period
-    const [ldCountRows] = await db.execute(
-      `SELECT oi.served_by AS userId, COUNT(oi.id) AS ldCount
+    // Get LD drink count (quantity) AND total sales amount per staff for this period
+    const ldCountRows = await queryWithVoidFallback(
+      db,
+      `SELECT oi.served_by AS userId,
+              SUM(oi.quantity) AS ldCount,
+              SUM(oi.subtotal) AS ldAmount
        FROM order_items oi
        JOIN orders o ON o.id = oi.order_id
        WHERE o.branch_id = ? AND oi.department = 'LD'
-         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid' AND COALESCE(oi.is_voided,0) = 0
+         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
+         AND COALESCE(oi.is_voided,0) = 0
+       GROUP BY oi.served_by`,
+      `SELECT oi.served_by AS userId,
+              SUM(oi.quantity) AS ldCount,
+              SUM(oi.subtotal) AS ldAmount
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
        GROUP BY oi.served_by`,
       [branchId, fromDate, toDate]
-    ).catch(() => [[]]);
+    );
     const ldCountMap = {};
+    const ldAmountMap = {};
     for (const r of (ldCountRows || [])) {
-      if (r.userId) ldCountMap[String(r.userId)] = Number(r.ldCount || 0);
+      if (r.userId) {
+        ldCountMap[String(r.userId)] = Number(r.ldCount || 0);
+        ldAmountMap[String(r.userId)] = Number(r.ldAmount || 0);
+      }
     }
     const userIds = rows.map((r) => r.userId).filter(Boolean);
     let timeInMap = {};
@@ -1928,6 +2184,7 @@ app.get("/api/reports/payroll", async (req, res) => {
         hours: 0,
         commission,
         ldCount: ldCountMap[String(r.userId)] ?? 0,
+        ldAmount: ldAmountMap[String(r.userId)] ?? 0,
         incentives,
         adjustments,
         deductions,
@@ -2115,8 +2372,8 @@ app.get("/api/reports/payroll/:id", async (req, res) => {
 });
 
 // Compute payouts for all staff (creates/updates payout records; scoped by branch)
-// Commission = commission_rate (staff) × this staff's total LD only
-// Incentive = incentive_rate (staff) × total LD of ALL staff (period total)
+// Commission = total LD sales amount (sum of LD drink prices served by this lady)
+// Incentive = incentive_rate × this staff's own LD count
 app.post("/api/reports/payroll/compute", async (req, res) => {
   const branchId = getBranchId(req);
   const { from, to } = req.body || {};
@@ -2126,15 +2383,22 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
   try {
     const db = await getPool();
     
-    // Total LD count for entire period (all staff) — used for incentive formula
-    const [totalLdRows] = await db.execute(
-      `SELECT COUNT(oi.id) AS totalLd
+    // Total LD quantity for entire period (all staff combined) — used for incentive formula
+    const totalLdRows = await queryWithVoidFallback(
+      db,
+      `SELECT COALESCE(SUM(oi.quantity),0) AS totalLd
        FROM order_items oi
        JOIN orders o ON o.id = oi.order_id
        WHERE o.branch_id = ? AND oi.department = 'LD'
-         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid' AND COALESCE(oi.is_voided,0) = 0`,
+         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
+         AND COALESCE(oi.is_voided,0) = 0`,
+      `SELECT COALESCE(SUM(oi.quantity),0) AS totalLd
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'`,
       [branchId, fromDate, toDate]
-    ).catch(() => [{ totalLd: 0 }]);
+    );
     const totalLdAll = Number(totalLdRows[0]?.totalLd ?? 0);
     
     const [staffList] = await db.execute(
@@ -2146,21 +2410,32 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
     const results = [];
     
     for (const staff of staffList) {
-      // Count LD drinks served by this staff only
-      const [ldRows] = await db.execute(
-        `SELECT COUNT(oi.id) AS ldCount
+      // Count LD drinks served by this staff: total quantity AND total sales amount
+      const ldRows = await queryWithVoidFallback(
+        db,
+        `SELECT COALESCE(SUM(oi.quantity),0) AS ldCount,
+                COALESCE(SUM(oi.subtotal),0) AS ldAmount
          FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
          WHERE o.branch_id = ? AND oi.served_by = ? AND oi.department = 'LD'
-           AND o.order_date BETWEEN ? AND ? AND o.status = 'paid' AND COALESCE(oi.is_voided,0) = 0`,
+           AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
+           AND COALESCE(oi.is_voided,0) = 0`,
+        `SELECT COALESCE(SUM(oi.quantity),0) AS ldCount,
+                COALESCE(SUM(oi.subtotal),0) AS ldAmount
+         FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         WHERE o.branch_id = ? AND oi.served_by = ? AND oi.department = 'LD'
+           AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'`,
         [branchId, staff.id, fromDate, toDate]
       );
-      
+
       const ldCount = Number(ldRows[0]?.ldCount || 0);
-      // Commission = commission_rate × this staff's total LD only
-      const commission = ldCount * Number(staff.commission_rate || 0);
-      // Incentive = incentive_rate × total LD of ALL staff (same period total for everyone)
-      const incentives = totalLdAll * Number(staff.incentive_rate || 0);
+      const ldAmount = Number(ldRows[0]?.ldAmount || 0);
+      // Commission stored = total LD sales amount (SUM of drink prices for this lady)
+      const commission = ldAmount;
+      // Incentive = total all-staff LD × rate
+      const rate = Number(staff.incentive_rate || 0);
+      const incentives = totalLdAll * rate;
       
       const budget = Number(staff.budget || 0);
       
@@ -2199,6 +2474,7 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
         allowance: budget,
         commission,
         ldCount,
+        ldAmount,
         incentives,
         total,
       });
@@ -3084,6 +3360,27 @@ app.put("/api/settings", async (req, res) => {
     res.status(500).json({ error: "Failed to save settings" });
   }
 });
+
+// Auto-migrate: add is_voided and related columns to order_items if they don't exist.
+// This fixes LD count queries silently returning wrong data on older DBs.
+(async () => {
+  try {
+    const db = await getPool();
+    const migrations = [
+      "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS is_voided TINYINT(1) NOT NULL DEFAULT 0",
+      "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_by INT UNSIGNED DEFAULT NULL",
+      "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_at TIMESTAMP NULL DEFAULT NULL",
+      "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS voided_by_name VARCHAR(128) DEFAULT NULL",
+      "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS special_request VARCHAR(512) DEFAULT NULL",
+    ];
+    for (const sql of migrations) {
+      await db.execute(sql).catch(() => {}); // ignore if already exists
+    }
+    console.log("[Migration] order_items columns verified.");
+  } catch (e) {
+    console.warn("[Migration] Could not run auto-migration:", e.message);
+  }
+})();
 
 const server = app.listen(PORT, () => {
   console.log(`API running at http://localhost:${PORT}`);

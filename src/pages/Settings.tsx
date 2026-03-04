@@ -17,9 +17,12 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import {
   POS_AREAS,
+  POS_DEPTS,
   RECEIPT_PRINTERS_BY_AREA_KEY,
   RECEIPT_PRINTER_STORAGE_KEY,
+  DEPT_PRINTERS_KEY,
   type ReceiptPrintersByArea,
+  type DeptPrinters,
 } from "@/lib/storage-keys";
 import { getPosSettings, savePosSettings } from "@/lib/posSettings";
 
@@ -47,6 +50,18 @@ export default function Settings() {
       return { Lounge: single, Club: single, LD: single };
     } catch {
       return { Lounge: "", Club: "", LD: "" };
+    }
+  });
+  const [deptPrinters, setDeptPrinters] = useState<DeptPrinters>(() => {
+    try {
+      const raw = localStorage.getItem(DEPT_PRINTERS_KEY);
+      if (raw) {
+        const p = JSON.parse(raw) as Record<string, string>;
+        return { Bar: p.Bar ?? "", Kitchen: p.Kitchen ?? "", LD: p.LD ?? "" };
+      }
+      return { Bar: "", Kitchen: "", LD: "" };
+    } catch {
+      return { Bar: "", Kitchen: "", LD: "" };
     }
   });
 
@@ -247,6 +262,42 @@ export default function Settings() {
                   <strong>LAN printers:</strong> in <code className="bg-muted px-1 rounded">server/.env</code> set <code className="bg-muted px-1 rounded">PRINTER_INTERFACE=tcp://IP:9100</code> (e.g. <code className="bg-muted px-1 rounded">tcp://192.168.1.101:9100,tcp://192.168.1.102:9100,tcp://192.168.1.103:9100</code> for 3 areas), restart the server, then assign each here to Lounge / Club / LD.
                 </p>
               </div>
+              <div className="space-y-4 border-t border-border pt-4">
+                <Label>Department chit printers (Kitchen / Bar / LD)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Set the LAN printer for each department. Order chits will print directly — no browser dialog.
+                </p>
+                {POS_DEPTS.map((dept) => (
+                  <div key={dept} className="space-y-1">
+                    <Label className="text-muted-foreground">{dept}</Label>
+                    <Select
+                      value={(deptPrinters[dept] ?? "") || "_none"}
+                      onValueChange={(v) => {
+                        const name = v === "_none" ? "" : v;
+                        const next = { ...deptPrinters, [dept]: name };
+                        setDeptPrinters(next);
+                        localStorage.setItem(DEPT_PRINTERS_KEY, JSON.stringify(next));
+                        toast.success(name ? `${dept} chits → ${name}` : `${dept} printer cleared`);
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder={`Select printer for ${dept}`} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="_none">No direct print (use browser popup)</SelectItem>
+                        {printers.map((p) => (
+                          <SelectItem key={p.name} value={p.name}>
+                            {(p as { displayName?: string }).displayName || p.name}
+                            {p.isDefault ? " (default)" : ""}
+                            {(p as { isNetwork?: boolean }).isNetwork ? " — network" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="receiptFooter">Receipt Footer Note</Label>
                 <Textarea

@@ -9,11 +9,15 @@ interface StatCardProps {
     isPositive: boolean;
   };
   className?: string;
+  onClick?: () => void;
 }
 
-export function StatCard({ label, value, icon, trend, className }: StatCardProps) {
+export function StatCard({ label, value, icon, trend, className, onClick }: StatCardProps) {
   return (
-    <div className={cn("stat-card", className)}>
+    <div
+      className={cn("stat-card", onClick && "cursor-pointer hover:border-primary/50 hover:shadow-md transition-shadow", className)}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm text-muted-foreground">{label}</p>

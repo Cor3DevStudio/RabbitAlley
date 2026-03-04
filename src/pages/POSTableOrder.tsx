@@ -3,12 +3,12 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { api, type OrderItem } from "@/lib/api";
-import { getReceiptPrinterForArea } from "@/lib/storage-keys";
+import { getReceiptPrinterForArea, getDeptPrinter } from "@/lib/storage-keys";
 import { getPosSettings } from "@/lib/posSettings";
 import { mapApiTable, type Table, type Product } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Send, CreditCard, Eye, Printer, ChefHat, Wine, Banknote, Smartphone, Building2, Wallet, Tag, Percent, X, Gift, Plus, Lock, Receipt, User, Ban } from "lucide-react";
+import { ArrowLeft, Send, CreditCard, Eye, Printer, ChefHat, Wine, Banknote, Smartphone, Building2, Wallet, Tag, Percent, X, Gift, Plus, Lock, Receipt, User, Ban, MessageSquare } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
@@ -107,6 +107,7 @@ export default function POSTableOrder() {
   const [itemVoidPassword, setItemVoidPassword] = useState("");
   const [itemVoidError, setItemVoidError] = useState<string | null>(null);
   const [itemVoiding, setItemVoiding] = useState(false);
+  const [commentModal, setCommentModal] = useState<{ productId: string; servedBy?: string; value: string } | null>(null);
 
   useEffect(() => {
     if (!ladyModalOpen && selectedCategory !== "Ladies Drink") return;
@@ -318,131 +319,68 @@ export default function POSTableOrder() {
   );
 
   const printDeptReceipt = useCallback(
-    (deptTitle: string, subtitle: string, items: OrderItem[]) => {
+    async (deptTitle: string, subtitle: string, items: OrderItem[]) => {
       if (!table || items.length === 0) return;
-      const win = window.open("", "_blank", "width=400,height=600");
-      if (!win) {
-        toast.error("Pop-up blocked. Allow pop-ups to print.");
-        return;
-      }
       const now = new Date();
       const orderNumber = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${tableId?.replace(/\D/g, "") || "00"}`;
       const encoderName = user?.name || "Staff";
       const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
       const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-      const html = `
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>${deptTitle} Receipt</title>
-<style>
-  body { font-family: monospace; font-size: 14px; padding: 24px; max-width: 320px; margin: 0 auto; }
-  .center { text-align: center; }
-  .bold { font-weight: bold; }
-  .row { display: flex; justify-content: space-between; margin: 4px 0; }
-  .line { border-top: 1px dashed #ccc; margin: 8px 0; }
-  .items { margin: 12px 0; }
-  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-</style>
-</head><body>
-  <div class="center mb-4">
-    <div class="bold" style="font-size: 20px; letter-spacing: 0.1em;">${deptTitle}</div>
-    <div style="font-size: 12px; color: #666;">${subtitle}</div>
-  </div>
-  <div class="row"><span>Order No:</span><span>${orderNumber}</span></div>
-  <div class="row"><span>Date:</span><span>${dateStr}</span></div>
-  <div class="row"><span>Time:</span><span>${timeStr}</span></div>
-  <div class="row"><span>Area:</span><span>${table.area}</span></div>
-  <div class="row"><span>Table:</span><span>Table ${table.name}</span></div>
-  <div class="line"></div>
-  <div class="bold mb-2">ITEMS</div>
-  <div class="items">
-    ${deptTitle === "LD"
-      ? (() => {
-          // Group by lady name for LD receipts
-          const byLady: Record<string, typeof items> = {};
-          for (const item of items) {
-            const key = item.servedByName || "Unassigned";
-            if (!byLady[key]) byLady[key] = [];
-            byLady[key].push(item);
-          }
-          return Object.entries(byLady)
-            .map(([lady, ladyItems]) =>
-              `<div style="margin-top:6px;"><div class="bold" style="font-size:12px;border-bottom:1px dashed #ccc;padding-bottom:2px;">${lady}</div>` +
-              ladyItems.map(i => `<div class="row" style="padding-left:8px;"><span>${i.quantity}x ${i.name}${i.specialRequest ? ` <em style="font-size:11px;">(${i.specialRequest})</em>` : ""}</span></div>`).join("") +
-              `</div>`
-            ).join("");
-        })()
-      : items.map((item) => `<div class="row"><span>${item.quantity}x ${item.name}${item.servedByName ? ` <span style="font-size:11px;color:#555;">(${item.servedByName})</span>` : ""}${item.specialRequest ? ` <em style="font-size:11px;">(${item.specialRequest})</em>` : ""}</span></div>`).join("")}
-  </div>
-  <div class="line"></div>
-  <div class="row" style="font-size: 12px; color: #666;"><span>Encoder:</span><span>${encoderName}</span></div>
-  <div class="center mt-4" style="font-size: 12px; color: #999;">================================</div>
-</body></html>`;
-      win.document.write(html);
-      win.document.close();
-      win.focus();
-      setTimeout(() => {
-        win.print();
-        win.close();
-      }, 150);
+
+      // Map deptTitle ("BAR" / "KITCHEN" / "LD") to the dept key used in storage ("Bar" / "Kitchen" / "LD")
+      const deptKey = deptTitle === "BAR" ? "Bar" : deptTitle === "KITCHEN" ? "Kitchen" : "LD";
+      const printerName = getDeptPrinter(deptKey);
+
+      // Send to LAN printer via backend only — browser print dialog is disabled
+      try {
+        const result = await api.print.deptReceipt({
+          dept: deptKey,
+          title: deptTitle,
+          subtitle,
+          items: items.map((i) => ({ name: i.name, quantity: i.quantity, servedByName: i.servedByName, specialRequest: i.specialRequest })),
+          table: table.name,
+          area: table.area,
+          encoder: encoderName,
+          orderNumber,
+          date: dateStr,
+          time: timeStr,
+          printerName,
+        });
+        if (!result.ok) {
+          toast.warning(`${deptTitle} chit not printed: ${result.error || "No printer configured"}. Set a LAN printer for ${deptTitle} in Settings.`);
+        }
+      } catch {
+        toast.warning(`${deptTitle} chit not printed. Set a LAN printer for ${deptTitle} in Settings.`);
+      }
     },
     [table, user?.name, tableId]
   );
 
   // Must be called unconditionally (before any early return) to satisfy Rules of Hooks
   const printCashierOrderSlip = useCallback(
-    (items: OrderItem[], orderId: string) => {
+    async (items: OrderItem[], orderId: string) => {
       if (!table || items.length === 0) return;
-      const win = window.open("", "_blank", "width=400,height=700");
-      if (!win) {
-        toast.error("Pop-up blocked. Allow pop-ups for cashier slip.");
-        return;
-      }
       const now = new Date();
       const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
       const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
       const slipSubtotal = items.reduce((s, i) => s + i.subtotal, 0);
-      const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Order Slip</title>
-<style>
-  body { font-family: monospace; font-size: 13px; padding: 20px; max-width: 340px; margin: 0 auto; }
-  .center { text-align: center; }
-  .bold { font-weight: bold; }
-  .row { display: flex; justify-content: space-between; margin: 3px 0; }
-  .line { border-top: 1px dashed #aaa; margin: 8px 0; }
-  .sig { margin-top: 32px; border-top: 1px solid #000; padding-top: 4px; font-size: 11px; color: #555; }
-  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-</style>
-</head><body>
-  <div class="center">
-    <div class="bold" style="font-size:18px;">RABBIT ALLEY</div>
-    <div style="font-size:12px;">Bar &amp; Restaurant</div>
-  </div>
-  <div class="line"></div>
-  <div class="center bold" style="font-size:14px;margin:6px 0;">ORDER SLIP</div>
-  <div class="row"><span>Order No:</span><span>${orderId}</span></div>
-  <div class="row"><span>Date:</span><span>${dateStr}</span></div>
-  <div class="row"><span>Time:</span><span>${timeStr}</span></div>
-  <div class="row"><span>Area:</span><span>${table.area}</span></div>
-  <div class="row"><span>Table:</span><span>Table ${table.name}</span></div>
-  <div class="row"><span>Waiter:</span><span>${user?.name || "Staff"}</span></div>
-  <div class="line"></div>
-  <div class="bold" style="margin-bottom:4px;">ITEMS</div>
-  ${items.map((item) => `
-    <div class="row">
-      <span>${item.quantity}x ${item.name}${item.specialRequest ? ` <em style="font-size:11px;">(${item.specialRequest})</em>` : ""}</span>
-      <span>&#8369;${item.subtotal.toFixed(2)}</span>
-    </div>
-  `).join("")}
-  <div class="line"></div>
-  <div class="row bold"><span>SUBTOTAL:</span><span>&#8369;${slipSubtotal.toFixed(2)}</span></div>
-  <div class="line"></div>
-  <div style="font-size:11px;color:#888;text-align:center;">This is NOT the official receipt.<br>Final bill subject to taxes &amp; service charge.</div>
-  <div class="sig center">Customer Signature: ___________________________</div>
-</body></html>`;
-      win.document.write(html);
-      win.document.close();
-      win.focus();
-      setTimeout(() => { win.print(); win.close(); }, 150);
+      // Use the cashier (area) printer; fall back to Bar printer if none
+      const printerName = getDeptPrinter("Bar") || undefined;
+      try {
+        await api.print.orderSlip({
+          orderId,
+          table: table.name,
+          area: table.area,
+          waiter: user?.name || "Staff",
+          date: dateStr,
+          time: timeStr,
+          subtotal: slipSubtotal,
+          items: items.map((i) => ({ name: i.name, quantity: i.quantity, subtotal: i.subtotal, specialRequest: i.specialRequest })),
+          printerName: printerName ?? null,
+        });
+      } catch {
+        // silently skip — order was still sent, slip is optional
+      }
     },
     [table, user?.name]
   );
@@ -491,8 +429,7 @@ export default function POSTableOrder() {
     if (!canAddItems) return;
     if (isLdProduct(product)) {
       if (selectedCategory === "Ladies Drink" && selectedLdLadyForCategory) {
-        const note = window.prompt("Special request (optional):");
-        doAddToOrder(product, selectedLdLadyForCategory, selectedLdLadyProfile?.name, note?.trim() || undefined);
+        doAddToOrder(product, selectedLdLadyForCategory, selectedLdLadyProfile?.name);
         return;
       }
       setPendingLdProduct(product);
@@ -500,8 +437,7 @@ export default function POSTableOrder() {
       setSelectedLady(selectedLdLadyForCategory || "");
       return;
     }
-    const note = window.prompt("Special request (optional):");
-    doAddToOrder(product, undefined, undefined, note?.trim() || undefined);
+    doAddToOrder(product, undefined, undefined);
   };
 
   const doAddToOrder = (product: Product, servedBy?: string, servedByName?: string, specialRequest?: string) => {
@@ -609,6 +545,16 @@ export default function POSTableOrder() {
     );
   };
 
+  const updateItemComment = (productId: string, servedBy: string | undefined, comment: string) => {
+    updateActiveTabItems((prev) =>
+      prev.map((item) =>
+        item.productId === productId && (item.servedBy ?? "") === (servedBy ?? "")
+          ? { ...item, specialRequest: comment.trim() || undefined }
+          : item
+      )
+    );
+  };
+
   // Current tab totals (for display)
   const subtotal = orderItems.filter((i) => !i.isVoided).reduce((sum, item) => sum + item.subtotal, 0);
   const complimentaryTotal = orderItems
@@ -623,8 +569,10 @@ export default function POSTableOrder() {
   // Combined totals from ALL sent tabs (for payment)
   const sentTabs = orderTabs.filter((t) => t.sent);
   const combinedItems = sentTabs.flatMap((t) => t.items);
-  const combinedSubtotal = combinedItems.filter((i) => !i.isVoided).reduce((s, i) => s + i.subtotal, 0);
-  const combinedComplimentary = combinedItems.filter((i) => !i.isVoided && i.isComplimentary).reduce((s, i) => s + i.subtotal, 0);
+  /** Non-voided items only — use this for payment screen so voided are not visible */
+  const paymentDisplayItems = combinedItems.filter((i) => !i.isVoided);
+  const combinedSubtotal = paymentDisplayItems.reduce((s, i) => s + i.subtotal, 0);
+  const combinedComplimentary = paymentDisplayItems.filter((i) => i.isComplimentary).reduce((s, i) => s + i.subtotal, 0);
   const combinedChargeable = combinedSubtotal - combinedComplimentary;
   const combinedTax = combinedChargeable * taxRateDecimal;
   const combinedServiceCharge = computeServiceCharge(combinedChargeable);
@@ -889,16 +837,17 @@ export default function POSTableOrder() {
         time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
         table: `${table?.area} - ${table?.name}`,
         cashier: user?.name || "Staff",
-        items: combinedItems.map((item) => ({
-          name: item.isVoided
-            ? `${item.name} (VOIDED${item.voidedByName ? ` by ${item.voidedByName}` : ""})`
-            : item.specialRequest
-              ? `${item.name} - ${item.specialRequest}`
-              : item.name,
-          quantity: item.quantity,
-          subtotal: item.isVoided ? 0 : item.subtotal,
-          isComplimentary: item.isComplimentary,
-        })),
+        items: combinedItems.map((item) => {
+          let name: string;
+          if (item.isVoided) {
+            name = `${item.name} (VOIDED${item.voidedByName ? ` by ${item.voidedByName}` : ""})`;
+          } else {
+            const ladySuffix = item.department === "LD" && item.servedByName ? ` [${item.servedByName}]` : "";
+            const noteSuffix = item.specialRequest ? ` - ${item.specialRequest}` : "";
+            name = `${item.name}${ladySuffix}${noteSuffix}`;
+          }
+          return { name, quantity: item.quantity, subtotal: item.isVoided ? 0 : item.subtotal, isComplimentary: item.isComplimentary };
+        }),
         subtotal: combinedSubtotal,
         complimentary: combinedComplimentary > 0 ? combinedComplimentary : undefined,
         discount: discountAmount > 0 ? discountAmount : undefined,
@@ -1059,16 +1008,17 @@ export default function POSTableOrder() {
       time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
       table: `${table.area} - ${table.name}`,
       cashier: user?.name || "Staff",
-      items: tab.items.map((item) => ({
-        name: item.isVoided
-          ? `${item.name} (VOIDED${item.voidedByName ? ` by ${item.voidedByName}` : ""})`
-          : item.specialRequest
-            ? `${item.name} - ${item.specialRequest}`
-            : item.name,
-        quantity: item.quantity,
-        subtotal: item.isVoided ? 0 : item.subtotal,
-        isComplimentary: item.isComplimentary,
-      })),
+      items: tab.items.map((item) => {
+        let name: string;
+        if (item.isVoided) {
+          name = `${item.name} (VOIDED${item.voidedByName ? ` by ${item.voidedByName}` : ""})`;
+        } else {
+          const ladySuffix = item.department === "LD" && item.servedByName ? ` [${item.servedByName}]` : "";
+          const noteSuffix = item.specialRequest ? ` - ${item.specialRequest}` : "";
+          name = `${item.name}${ladySuffix}${noteSuffix}`;
+        }
+        return { name, quantity: item.quantity, subtotal: item.isVoided ? 0 : item.subtotal, isComplimentary: item.isComplimentary };
+      }),
       subtotal: reprintSubtotal,
       complimentary: reprintComplimentary > 0 ? reprintComplimentary : undefined,
       serviceCharge: reprintService,
@@ -1351,6 +1301,15 @@ export default function POSTableOrder() {
                           title="Set item discount"
                         >
                           <Percent className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant={item.specialRequest ? "default" : "outline"}
+                          size="icon"
+                          className={`h-6 w-6 ${item.specialRequest ? "bg-amber-500 hover:bg-amber-600" : ""}`}
+                          onClick={() => setCommentModal({ productId: item.productId, servedBy: item.servedBy, value: item.specialRequest ?? "" })}
+                          title={item.specialRequest ? `Comment: ${item.specialRequest}` : "Add comment"}
+                        >
+                          <MessageSquare className="w-3 h-3" />
                         </Button>
                         <div className="flex items-center gap-1">
                           <Button
@@ -1790,9 +1749,9 @@ export default function POSTableOrder() {
                 </div>
               </div>
 
-              {/* Items - combined from all sent orders */}
+              {/* Items - combined from all sent orders (voided hidden) */}
               <div className="space-y-3 mb-4 max-h-[350px] overflow-y-auto">
-                {combinedItems.map((item, idx) => (
+                {paymentDisplayItems.map((item, idx) => (
                   <div key={`${item.productId}-${idx}`} className={`flex justify-between text-sm ${item.isComplimentary ? "text-purple-600" : ""}`}>
                     <div>
                       <p className="font-medium flex items-center gap-1">
@@ -1802,6 +1761,12 @@ export default function POSTableOrder() {
                       <p className="text-xs text-muted-foreground">
                         Qty: {item.quantity}
                         {item.isComplimentary && " (Compli)"}
+                        {item.department === "LD" && item.servedByName && (
+                          <span className="ml-1 text-purple-500 font-medium">· {item.servedByName}</span>
+                        )}
+                        {item.specialRequest && (
+                          <span className="ml-1 italic">· {item.specialRequest}</span>
+                        )}
                       </p>
                     </div>
                     <p className={`font-medium ${item.isComplimentary ? "line-through" : ""}`}>
@@ -2360,8 +2325,7 @@ export default function POSTableOrder() {
               onClick={() => {
                 if (!pendingLdProduct || !selectedLady) return;
                 const lady = ldLadies.find((l) => l.id === selectedLady);
-                const note = window.prompt("Special request (optional):");
-                doAddToOrder(pendingLdProduct, selectedLady, lady?.name, note?.trim() || undefined);
+                doAddToOrder(pendingLdProduct, selectedLady, lady?.name);
                 setSelectedLdLadyForCategory(selectedLady);
                 setLadyModalOpen(false);
                 setPendingLdProduct(null);
@@ -2421,6 +2385,51 @@ export default function POSTableOrder() {
               <Button type="submit" disabled={voiding}>{voiding ? "Voiding…" : "Void Order(s)"}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Item Comment Modal */}
+      <Dialog open={!!commentModal} onOpenChange={(open) => { if (!open) setCommentModal(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-amber-500" />
+              Item Comment
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              autoFocus
+              placeholder="Enter comment or special request..."
+              value={commentModal?.value ?? ""}
+              onChange={(e) => setCommentModal((prev) => prev ? { ...prev, value: e.target.value } : prev)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  if (commentModal) updateItemComment(commentModal.productId, commentModal.servedBy, commentModal.value);
+                  setCommentModal(null);
+                }
+                if (e.key === "Escape") setCommentModal(null);
+              }}
+            />
+            <p className="text-xs text-muted-foreground">This will appear on the order chit and receipt.</p>
+          </div>
+          <DialogFooter>
+            {commentModal?.value && (
+              <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => {
+                if (commentModal) updateItemComment(commentModal.productId, commentModal.servedBy, "");
+                setCommentModal(null);
+              }}>
+                Clear
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => setCommentModal(null)}>Cancel</Button>
+            <Button onClick={() => {
+              if (commentModal) updateItemComment(commentModal.productId, commentModal.servedBy, commentModal.value);
+              setCommentModal(null);
+            }}>
+              Save
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -2682,34 +2691,34 @@ export default function POSTableOrder() {
                   </div>
                 </div>
 
-                {/* Items */}
+                {/* Items (voided hidden on payment screen) */}
                 <div className="border-b border-dashed border-gray-300 dark:border-gray-700 pb-3 mb-3">
                   <p className="font-bold mb-2">ITEMS</p>
                   <div className="space-y-1">
-                    {orderItems.slice(0, 6).map((item) => (
-                      <div key={item.productId} className="flex justify-between gap-2">
+                    {paymentDisplayItems.slice(0, 6).map((item, idx) => (
+                      <div key={`pay-${idx}-${item.productId}`} className="flex justify-between gap-2">
                         <span className="flex-1 min-w-0 break-words text-left pr-2">
                           {item.quantity}x {item.name}
                         </span>
                         <span className="shrink-0">{formatCurrency(item.subtotal)}</span>
                       </div>
                     ))}
-                    {orderItems.length > 6 && (
-                      <p className="text-center text-muted-foreground">... +{orderItems.length - 6} more items</p>
+                    {paymentDisplayItems.length > 6 && (
+                      <p className="text-center text-muted-foreground">... +{paymentDisplayItems.length - 6} more items</p>
                     )}
                   </div>
                 </div>
 
-                {/* Totals */}
+                {/* Totals (combined bill — voided excluded) */}
                 <div className="space-y-1 border-b border-dashed border-gray-300 dark:border-gray-700 pb-3 mb-3">
                   <div className="flex justify-between">
                     <span>Subtotal:</span>
-                    <span>{formatCurrency(subtotal)}</span>
+                    <span>{formatCurrency(combinedSubtotal)}</span>
                   </div>
-                  {complimentaryTotal > 0 && (
+                  {combinedComplimentary > 0 && (
                     <div className="flex justify-between">
                       <span>Less Compli:</span>
-                      <span>-{formatCurrency(complimentaryTotal)}</span>
+                      <span>-{formatCurrency(combinedComplimentary)}</span>
                     </div>
                   )}
                   {appliedDiscount && (
