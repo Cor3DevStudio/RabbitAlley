@@ -222,6 +222,17 @@ export default function Products() {
     }
   };
 
+  const handleDelete = async (product: Product) => {
+    if (!window.confirm(`Delete "${product.name}"? It will be removed from the product list and no longer appear in POS. You can add it again later.`)) return;
+    try {
+      await api.products.setStatus(product.id, "inactive");
+      toast.success(`${product.name} deleted`);
+      loadProducts();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete");
+    }
+  };
+
   const formFields = (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
@@ -479,10 +490,16 @@ export default function Products() {
                           Edit
                         </DropdownMenuItem>
                         {product.status === "active" ? (
-                          <DropdownMenuItem onClick={() => handleDeactivate(product)} className="text-destructive">
-                            <Trash2 className="w-4 h-4 mr-2" />
-                            Deactivate
-                          </DropdownMenuItem>
+                          <>
+                            <DropdownMenuItem onClick={() => handleDeactivate(product)} className="text-destructive">
+                              <Trash2 className="w-4 h-4 mr-2" />
+                              Deactivate
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleDelete(product)} className="text-destructive">
+                              <Trash2 className="w-4 h-4 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </>
                         ) : (
                           <DropdownMenuItem onClick={() => handleActivate(product)}>
                             Activate

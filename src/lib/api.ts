@@ -180,6 +180,8 @@ export const api = {
   orderItems: {
     void: (itemId: string, data: { employeeId: string; password: string }) =>
       fetchApi<{ ok: boolean; voidedByName: string }>(`/api/order-items/${itemId}/void`, { method: "PATCH", body: JSON.stringify(data) }),
+    setComplimentary: (itemId: string, isComplimentary: boolean) =>
+      fetchApi<{ ok: boolean; isComplimentary: boolean }>(`/api/order-items/${itemId}/complimentary`, { method: "PATCH", body: JSON.stringify({ isComplimentary }) }),
   },
   products: {
     list: (params?: { search?: string; category?: string; department?: string; area?: "Lounge" | "Club" | "LD" }) => {
@@ -218,6 +220,8 @@ export const api = {
         incentiveRate: number; tableIncentive: number; hasQuota: boolean; quotaAmount: number;
         hasLogin: boolean; status: string 
       }>("/api/staff", { method: "POST", body: JSON.stringify(body) }),
+    setStatus: (id: string, status: "active" | "inactive") =>
+      fetchApi<{ ok: boolean; status: string }>(`/api/staff/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
     update: (id: string, body: { 
       code?: string; name?: string; nickname?: string; type?: string; allowance?: number; hourly?: number;
       budget?: number; commissionRate?: number; incentiveRate?: number; tableIncentive?: number;
@@ -246,10 +250,11 @@ export const api = {
     reject: (id: string) => fetchApi<{ ok: boolean }>(`/api/discounts/${id}/reject`, { method: "PATCH" }),
   },
   reports: {
-    sales: (from?: string, to?: string) => {
+    sales: (from?: string, to?: string, dayStartHour?: number | null) => {
       const q = new URLSearchParams();
       if (from) q.set("from", from);
       if (to) q.set("to", to || from || new Date().toISOString().slice(0, 10));
+      if (dayStartHour != null && dayStartHour >= 0 && dayStartHour <= 23) q.set("dayStartHour", String(dayStartHour));
       return fetchApi<{ list: Array<{ id: string; area: string; table: string; employee: string; subtotal: number; discount: number; tax: number; total: number; status: string; time: string }>; summary: { totalOrders: number; totalSales: number; totalDiscounts: number; totalTax: number } }>("/api/reports/sales?" + q.toString());
     },
     payroll: (from?: string, to?: string) => {
@@ -469,7 +474,7 @@ export const api = {
         `/api/tables/${tableId}/pay-all`,
         { method: "POST", body: JSON.stringify({ paymentMethod, discountName, discountAmount, customerName, splits }) }
       ),
-    transfer: (data: { orderId: string; fromTable: string; toTable: string; transferredBy: string; reason?: string }) =>
+    transfer: (data: { orderId?: string; fromTable: string; toTable: string; transferredBy: string; reason?: string; transferAll?: boolean }) =>
       fetchApi<{ ok: boolean; message: string }>("/api/tables/transfer", { method: "POST", body: JSON.stringify(data) }),
     merge: (data: { sourceOrderId: string; targetOrderId: string; transferredBy: string; reason?: string }) =>
       fetchApi<{ ok: boolean; message: string }>("/api/tables/merge", { method: "POST", body: JSON.stringify(data) }),

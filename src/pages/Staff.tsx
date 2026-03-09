@@ -26,7 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, Search, Edit, KeyRound } from "lucide-react";
+import { Plus, Search, Edit, KeyRound, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -76,6 +76,17 @@ export default function Staff() {
   const [form, setForm] = useState(emptyStaff());
   const [newPassword, setNewPassword] = useState("password");
   const [saving, setSaving] = useState(false);
+
+  const handleDelete = async (s: StaffMember) => {
+    if (!window.confirm(`Delete "${s.name}"? They will be removed from the active staff list and cannot log in. You can reactivate from Edit.`)) return;
+    try {
+      await api.staff.setStatus(s.id, "inactive");
+      toast.success(`${s.name} deleted`);
+      loadStaff();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete");
+    }
+  };
 
   const loadStaff = async () => {
     setLoading(true);
@@ -414,7 +425,7 @@ export default function Staff() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(s)}>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(s)} title="Edit">
                         <Edit className="w-4 h-4" />
                       </Button>
                       <Button
@@ -425,6 +436,15 @@ export default function Staff() {
                         onClick={() => handleResetPassword(s)}
                       >
                         <KeyRound className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        title="Delete"
+                        onClick={() => handleDelete(s)}
+                      >
+                        <Trash2 className="w-4 h-4" />
                       </Button>
                     </div>
                   </TableCell>

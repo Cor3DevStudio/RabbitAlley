@@ -679,12 +679,19 @@ export default function POSTableOrder() {
   // For split: entered amounts must sum to base discounted total (card surcharge added automatically)
   const splitTotal = splitPayments.reduce((sum, split) => sum + (Number(split.amount) || 0), 0);
   const splitRemaining = discountedTotal - splitTotal;
+  // When only one split is "charge", allow using main chargeCustomerName if split name empty
+  const chargeSplitsCount = splitPayments.filter((sp) => sp.method === "charge").length;
   const splitValid =
     useSplitPayment &&
     splitPayments.length >= 2 &&
-    splitPayments.every((sp, idx) =>
-      Number(sp.amount) > 0 && (sp.method !== "charge" || (splitChargeNames[idx] || "").trim())
-    ) &&
+    splitPayments.every((sp, idx) => {
+      const amountOk = Number(sp.amount) > 0;
+      const chargeNameOk =
+        sp.method !== "charge" ||
+        (splitChargeNames[idx] || "").trim() ||
+        (chargeSplitsCount === 1 && chargeCustomerName.trim());
+      return amountOk && chargeNameOk;
+    }) &&
     Math.abs(splitRemaining) < 0.01;
 
   const openVoidModal = () => {
@@ -811,7 +818,7 @@ export default function POSTableOrder() {
           splitPayments.map((sp, idx) => ({
             amount: Number(sp.amount) || 0,
             paymentMethod: sp.method,
-            customerName: sp.method === "charge" ? (splitChargeNames[idx] || "") : undefined,
+            customerName: sp.method === "charge" ? (splitChargeNames[idx] || (chargeSplitsCount === 1 ? chargeCustomerName : "")) : undefined,
           }))
         );
         paidOrderIds = payResult.orderIds || [];
@@ -846,7 +853,7 @@ export default function POSTableOrder() {
             const noteSuffix = item.specialRequest ? ` - ${item.specialRequest}` : "";
             name = `${item.name}${ladySuffix}${noteSuffix}`;
           }
-          return { name, quantity: item.quantity, subtotal: item.isVoided ? 0 : item.subtotal, isComplimentary: item.isComplimentary };
+          return { name, quantity: item.quantity, subtotal: item.isVoided ? 0 : item.subtotal, isComplimentary: item.isComplimentary, note: item.specialRequest || undefined };
         }),
         subtotal: combinedSubtotal,
         complimentary: combinedComplimentary > 0 ? combinedComplimentary : undefined,
@@ -1749,14 +1756,33 @@ export default function POSTableOrder() {
                 </div>
               </div>
 
-              {/* Items - combined from all sent orders (voided hidden) */}
+              {/* Items - combined from all sent orders (voided hidden); cashier can mark as complimentary at bill-out */}
               <div className="space-y-3 mb-4 max-h-[350px] overflow-y-auto">
                 {paymentDisplayItems.map((item, idx) => (
-                  <div key={`${item.productId}-${idx}`} className={`flex justify-between text-sm ${item.isComplimentary ? "text-purple-600" : ""}`}>
-                    <div>
-                      <p className="font-medium flex items-center gap-1">
+                  <div key={item.id ? `item-${item.id}` : `${item.productId}-${idx}`} className={`flex justify-between items-start gap-2 text-sm ${item.isComplimentary ? "text-purple-600" : ""}`}>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium flex items-center gap-1 flex-wrap">
                         {item.name}
-                        {item.isComplimentary && <Gift className="w-3 h-3" />}
+                        {item.isComplimentary && <Gift className="w-3 h-3 shrink-0" />}
+                        {canProcessPayment && item.id && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 shrink-0 text-purple-600 hover:text-purple-700 hover:bg-purple-500/10"
+                            title={item.isComplimentary ? "Remove complimentary" : "Mark as complimentary"}
+                            onClick={async () => {
+                              try {
+                                await api.orderItems.setComplimentary(item.id!, !item.isComplimentary);
+                                await refetchOrders();
+                              } catch {
+                                toast.error("Failed to update complimentary");
+                              }
+                            }}
+                          >
+                            <Gift className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         Qty: {item.quantity}
@@ -1769,7 +1795,7 @@ export default function POSTableOrder() {
                         )}
                       </p>
                     </div>
-                    <p className={`font-medium ${item.isComplimentary ? "line-through" : ""}`}>
+                    <p className={`font-medium shrink-0 ${item.isComplimentary ? "line-through" : ""}`}>
                       {formatCurrency(item.subtotal)}
                     </p>
                   </div>
@@ -1802,16 +1828,42 @@ export default function POSTableOrder() {
                   <span className="text-muted-foreground">{taxLabel}</span>
                   <span>{formatCurrency(discountedTax)}</span>
                 </div>
-                {hasCardSurcharge && (
+                {hasCardSurcharge && !useSplitPayment && (
                   <div className="flex justify-between text-sm text-amber-600">
                     <span>Card Surcharge ({posSettings.cardSurcharge.toFixed(2).replace(/\.00$/, "")}%)</span>
                     <span>+{formatCurrency(cardSurcharge)}</span>
+                  </div>
+                )}
+                {useSplitPayment && splitCardSurcharge > 0 && (
+                  <div className="flex justify-between text-sm text-amber-600">
+                    <span>Card Surcharge ({posSettings.cardSurcharge.toFixed(2).replace(/\.00$/, "")}%)</span>
+                    <span>+{formatCurrency(splitCardSurcharge)}</span>
                   </div>
                 )}
                 <div className="flex justify-between font-bold text-lg pt-2 border-t border-border">
                   <span>Total</span>
                   <span className="text-primary">{formatCurrency(finalTotal)}</span>
                 </div>
+                {useSplitPayment && splitPayments.some((sp) => Number(sp.amount) > 0) && (
+                  <div className="pt-3 mt-2 border-t border-dashed border-border space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Payment breakdown</p>
+                    {splitPayments.map((sp, idx) => {
+                      const amt = Number(sp.amount) || 0;
+                      if (amt <= 0) return null;
+                      const label = sp.method === "charge" ? `Charge (${splitChargeNames[idx] || (chargeSplitsCount === 1 ? chargeCustomerName : "") || "—"})` : sp.method.toUpperCase();
+                      return (
+                        <div key={idx} className="flex justify-between text-sm">
+                          <span>{label}</span>
+                          <span>{formatCurrency(amt)}</span>
+                        </div>
+                      );
+                    })}
+                    <div className="flex justify-between text-sm font-medium pt-1">
+                      <span>Split total</span>
+                      <span>{formatCurrency(splitTotal)}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1909,9 +1961,9 @@ export default function POSTableOrder() {
                     variant="outline"
                     size="sm"
                     className="w-full"
-                    onClick={() => setAmountTendered(String(Math.ceil(finalTotal / 100) * 100))}
+                    onClick={() => setAmountTendered(String(finalTotal))}
                   >
-                    Exact Amount ({formatCurrency(Math.ceil(finalTotal / 100) * 100)})
+                    Exact Amount ({formatCurrency(finalTotal)})
                   </Button>
                 </div>
               )}

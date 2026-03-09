@@ -207,13 +207,13 @@ export default function POS() {
     setTransferring(true);
     try {
       await api.tables.transfer({
-        orderId: source.currentOrderId,
         fromTable: source.id,
         toTable: target.id,
         transferredBy: user?.id || "0",
         reason: transferReason.trim() || undefined,
+        transferAll: true,
       });
-      toast.success(`Order moved from ${source.area} - ${source.name} to ${target.area} - ${target.name}`);
+      toast.success(`All orders moved from ${source.area} - ${source.name} to ${target.area} - ${target.name}`);
       setTransferOpen(false);
       loadTables();
     } catch (e) {

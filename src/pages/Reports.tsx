@@ -325,13 +325,16 @@ export default function Reports() {
   const [computeStep, setComputeStep] = useState("");
   const [orderDetail, setOrderDetail] = useState<Awaited<ReturnType<typeof api.orders.detail>> | null>(null);
   const [orderDetailLoading, setOrderDetailLoading] = useState(false);
+  const [salesViewMode, setSalesViewMode] = useState<"order" | "table">("order");
+  const [dayStartHour, setDayStartHour] = useState<number | "">("");
 
   const loadSalesStable = useCallback(async () => {
     if (dateFrom > dateTo) return;
     setLoadingSales(true);
     setError(null);
     try {
-      const res = await api.reports.sales(dateFrom, dateTo);
+      const hour = dayStartHour === "" ? undefined : Number(dayStartHour);
+      const res = await api.reports.sales(dateFrom, dateTo, hour);
       setSalesList(res.list);
       setSalesSummary(res.summary);
     } catch (e) {
@@ -339,7 +342,7 @@ export default function Reports() {
     } finally {
       setLoadingSales(false);
     }
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, dayStartHour]);
 
   const loadPayrollStable = useCallback(async () => {
     if (dateFrom > dateTo) return;
@@ -919,7 +922,7 @@ export default function Reports() {
         </div>
       )}
 
-      <div className="flex gap-2 mb-6">
+      <div className="flex flex-wrap gap-2 mb-6 items-center">
         <Button
           variant={activeTab === "sales" ? "default" : "secondary"}
           onClick={() => setActiveTab("sales")}
@@ -932,6 +935,24 @@ export default function Reports() {
         >
           Payroll Report
         </Button>
+        {activeTab === "sales" && (
+          <div className="flex gap-1 ml-2 border rounded-lg p-0.5 bg-muted/30">
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${salesViewMode === "order" ? "bg-background shadow font-medium" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setSalesViewMode("order")}
+            >
+              Per order
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${salesViewMode === "table" ? "bg-background shadow font-medium" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setSalesViewMode("table")}
+            >
+              Per table
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-3 mb-6">
@@ -957,6 +978,21 @@ export default function Reports() {
           <Filter className="w-4 h-4 mr-2" />
           Filter
         </Button>
+        {activeTab === "sales" && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Operational day start (hour 0–23):</span>
+            <Input
+              type="number"
+              min={0}
+              max={23}
+              placeholder="e.g. 4 = 4am"
+              className="w-24"
+              value={dayStartHour}
+              onChange={(e) => setDayStartHour(e.target.value === "" ? "" : Math.min(23, Math.max(0, parseInt(e.target.value, 10) || 0)))}
+            />
+            <span className="text-xs text-muted-foreground">Leave empty for calendar day. Set 4 so &quot;March 9&quot; = Mar 9 4am – Mar 10 3:59am</span>
+          </div>
+        )}
         {activeTab === "payroll" && (
           <Button onClick={handleComputePayouts}>
             <Calculator className="w-4 h-4 mr-2" />
@@ -990,29 +1026,68 @@ export default function Reports() {
             />
           </div>
 
-          <div className="rounded-lg border border-border overflow-hidden max-h-[500px] overflow-y-auto">
+          <div className="rounded-lg border border-border overflow-hidden max-h-[70vh] overflow-y-auto">
             <Table>
               <TableHeader className="sticky top-0 bg-muted/95 z-10">
                 <TableRow>
-                  <TableHead>Order No</TableHead>
-                  <TableHead>Area</TableHead>
-                  <TableHead>Table</TableHead>
-                  <TableHead>Employee</TableHead>
-                  <TableHead className="text-right">Subtotal</TableHead>
-                  <TableHead className="text-right">Discount</TableHead>
-                  <TableHead className="text-right">Tax</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Time</TableHead>
+                  {salesViewMode === "order" ? (
+                    <>
+                      <TableHead>Order No</TableHead>
+                      <TableHead>Area</TableHead>
+                      <TableHead>Table</TableHead>
+                      <TableHead>Employee</TableHead>
+                      <TableHead className="text-right">Subtotal</TableHead>
+                      <TableHead className="text-right">Discount</TableHead>
+                      <TableHead className="text-right">Tax</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Time</TableHead>
+                    </>
+                  ) : (
+                    <>
+                      <TableHead>Area</TableHead>
+                      <TableHead>Table</TableHead>
+                      <TableHead className="text-right">Orders</TableHead>
+                      <TableHead className="text-right">Subtotal</TableHead>
+                      <TableHead className="text-right">Discount</TableHead>
+                      <TableHead className="text-right">Tax</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </>
+                  )}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loadingSales ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={salesViewMode === "order" ? 10 : 7} className="text-center py-8 text-muted-foreground">
                       Loading…
                     </TableCell>
                   </TableRow>
+                ) : salesViewMode === "table" ? (
+                  (() => {
+                    const byTable = new Map<string, { area: string; table: string; orders: number; subtotal: number; discount: number; tax: number; total: number }>();
+                    for (const o of salesList) {
+                      const key = `${o.area}\t${o.table}`;
+                      const prev = byTable.get(key) || { area: o.area, table: o.table, orders: 0, subtotal: 0, discount: 0, tax: 0, total: 0 };
+                      prev.orders += 1;
+                      prev.subtotal += o.subtotal;
+                      prev.discount += o.discount;
+                      prev.tax += o.tax;
+                      prev.total += o.total;
+                      byTable.set(key, prev);
+                    }
+                    return Array.from(byTable.values()).map((row) => (
+                      <TableRow key={`${row.area}-${row.table}`}>
+                        <TableCell>{row.area}</TableCell>
+                        <TableCell>{row.table}</TableCell>
+                        <TableCell className="text-right">{row.orders}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(row.subtotal)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(row.discount)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(row.tax)}</TableCell>
+                        <TableCell className="text-right font-medium">{formatCurrency(row.total)}</TableCell>
+                      </TableRow>
+                    ));
+                  })()
                 ) : (
                   salesList.map((order) => (
                     <TableRow
@@ -1241,8 +1316,40 @@ export default function Reports() {
                 </div>
               </div>
 
-              {/* Status badge */}
-              <div className="flex justify-end">
+              {/* Status badge and Print */}
+              <div className="flex justify-between items-center gap-2 flex-wrap">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (!orderDetail) return;
+                    const w = window.open("", "_blank", "width=520,height=700");
+                    if (!w) return;
+                    const itemsRows = orderDetail.items.map((i) =>
+                      `<tr><td>${i.name}${i.isComplimentary ? " (Compli)" : ""}${i.isVoided ? " (VOIDED)" : ""}</td><td class="text-center">${i.quantity}</td><td class="text-right">${formatCurrency(i.unitPrice)}</td><td class="text-right">${formatCurrency(i.subtotal)}</td></tr>`
+                    ).join("");
+                    w.document.write(`
+                      <!DOCTYPE html><html><head><title>Order #${orderDetail.id}</title><style>
+                        body{font-family:system-ui,sans-serif;padding:16px;font-size:13px;}
+                        table{width:100%;border-collapse:collapse;} th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;}
+                        .text-right{text-align:right;} .text-center{text-align:center;}
+                        .bold{font-weight:bold;} .mt{margin-top:12px;}
+                      </style></head><body>
+                        <h2>Order #${orderDetail.id}</h2>
+                        <p>${orderDetail.area} — ${orderDetail.table} · ${orderDetail.employee || "—"} · ${new Date(orderDetail.createdAt).toLocaleString()}</p>
+                        <table class="mt"><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Subtotal</th></tr></thead><tbody>${itemsRows}</tbody></table>
+                        <p class="mt bold">Subtotal: ${formatCurrency(orderDetail.subtotal)} · Tax: ${formatCurrency(orderDetail.tax)} · Total: ${formatCurrency(orderDetail.total)}</p>
+                        <p class="mt">Status: ${orderDetail.status.toUpperCase()}</p>
+                      </body></html>`
+                    );
+                    w.document.close();
+                    w.focus();
+                    setTimeout(() => { w.print(); w.close(); }, 250);
+                  }}
+                >
+                  <Printer className="w-4 h-4 mr-2" />
+                  Print
+                </Button>
                 <Badge className={cn(
                   orderDetail.status === "paid"
                     ? "bg-success/20 text-success border-success/30"

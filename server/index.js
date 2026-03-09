@@ -474,14 +474,22 @@ app.post("/api/dashboard/tables", async (req, res) => {
   const { name, area } = req.body || {};
   const branchId = getBranchId(req);
   if (!name?.trim() || !area) return res.status(400).json({ error: "Name and area required" });
-  const id = String(name).trim();
+  const nameTrim = String(name).trim();
   const validAreas = ["Lounge", "Club", "LD"];
   if (!validAreas.includes(area)) return res.status(400).json({ error: "Area must be Lounge, Club, or LD" });
   try {
     const db = await getPool();
+    let id = nameTrim.replace(/\s+/g, "_").slice(0, 16) || "T";
+    const [existing] = await db.execute(
+      "SELECT id FROM pos_tables WHERE branch_id = ? AND id = ?",
+      [branchId, id]
+    );
+    if (existing.length > 0) {
+      id = id + "_" + Date.now();
+    }
     await db.execute(
       "INSERT INTO pos_tables (branch_id, id, name, area, status) VALUES (?, ?, ?, ?, 'available')",
-      [branchId, id, String(name).trim(), area]
+      [branchId, id, nameTrim, area]
     );
     const [rows] = await db.execute(
       "SELECT id, name, area, status, current_order_id AS currentOrderId FROM pos_tables WHERE branch_id = ? AND id = ?",
@@ -489,7 +497,7 @@ app.post("/api/dashboard/tables", async (req, res) => {
     );
     res.status(201).json({ ...rows[0], currentOrderId: rows[0].currentOrderId ?? undefined });
   } catch (err) {
-    if (err.code === "ER_DUP_ENTRY") return res.status(400).json({ error: "Table ID already exists" });
+    if (err.code === "ER_DUP_ENTRY") return res.status(400).json({ error: "Table name/ID already exists" });
     console.error("Add table error:", err);
     res.status(500).json({ error: "Failed to add table" });
   }
@@ -910,6 +918,41 @@ app.patch("/api/order-items/:id/void", async (req, res) => {
   }
 });
 
+// Set order item as complimentary (for cashier at bill-out)
+app.patch("/api/order-items/:id/complimentary", async (req, res) => {
+  const itemId = req.params.id;
+  const branchId = getBranchId(req);
+  const { isComplimentary } = req.body || {};
+  const value = !!isComplimentary;
+  try {
+    const db = await getPool();
+    const [items] = await db.execute(
+      "SELECT oi.id, oi.order_id FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id = ? AND o.branch_id = ?",
+      [itemId, branchId]
+    );
+    if (!items.length) return res.status(404).json({ error: "Item not found" });
+    await db.execute("UPDATE order_items SET is_complimentary = ? WHERE id = ?", [value ? 1 : 0, itemId]);
+    const orderId = items[0].order_id;
+    const [sumRows] = await db.execute(
+      `SELECT COALESCE(SUM(CASE WHEN COALESCE(is_voided,0) = 0 THEN subtotal ELSE 0 END), 0) AS subtotal,
+              COALESCE(SUM(CASE WHEN COALESCE(is_voided,0) = 0 AND is_complimentary = 1 THEN subtotal ELSE 0 END), 0) AS complimentary
+       FROM order_items WHERE order_id = ?`,
+      [orderId]
+    );
+    const totalSub = Number(sumRows[0]?.subtotal ?? 0);
+    const compli = Number(sumRows[0]?.complimentary ?? 0);
+    const chargeable = totalSub - compli;
+    const newTax = chargeable * 0.12;
+    const newService = chargeable * 0.1;
+    const newTotal = chargeable + newTax + newService;
+    await db.execute("UPDATE orders SET subtotal = ?, tax = ?, total = ? WHERE id = ?", [totalSub, newTax, newTotal, orderId]);
+    res.json({ ok: true, isComplimentary: value });
+  } catch (err) {
+    console.error("Set complimentary error:", err);
+    res.status(500).json({ error: "Failed to update item" });
+  }
+});
+
 // Pay single order (legacy; for single-order flow)
 app.patch("/api/orders/:id/pay", async (req, res) => {
   const { id } = req.params;
@@ -1165,6 +1208,9 @@ app.post("/api/print/receipt", async (req, res) => {
       const priceLine = `P${Number(item.subtotal).toFixed(2)}`;
       const padding = 48 - itemLine.length - priceLine.length;
       printer.println(itemLine + " ".repeat(Math.max(1, padding)) + priceLine);
+      if (item.note && String(item.note).trim()) {
+        printer.println("   Note: " + String(item.note).trim().slice(0, 40));
+      }
     }
     printer.drawLine();
 
@@ -1831,6 +1877,22 @@ app.put("/api/staff/:id", async (req, res) => {
   }
 });
 
+app.patch("/api/staff/:id/status", async (req, res) => {
+  const id = req.params.id;
+  const { status } = req.body || {};
+  const active = status === "active" ? 1 : 0;
+  try {
+    const db = await getPool();
+    const [r] = await db.execute("SELECT id FROM users WHERE id = ?", [id]);
+    if (!r.length) return res.status(404).json({ error: "Staff not found" });
+    await db.execute("UPDATE users SET active = ? WHERE id = ?", [active, id]);
+    res.json({ ok: true, status: status === "active" ? "active" : "inactive" });
+  } catch (err) {
+    console.error("Staff status update error:", err);
+    res.status(500).json({ error: "Failed to update status" });
+  }
+});
+
 app.patch("/api/staff/:id/password", async (req, res) => {
   const id = req.params.id;
   const { password } = req.body || {};
@@ -2055,26 +2117,35 @@ app.post("/api/reports/save-print", (req, res) => {
 
 app.get("/api/reports/sales", async (req, res) => {
   const branchId = getBranchId(req);
-  const { from, to } = req.query;
+  const { from, to, dayStartHour } = req.query;
   const fromDate = from || new Date().toISOString().slice(0, 10);
   const toDate = to || fromDate;
+  const startHour = dayStartHour != null ? Math.min(23, Math.max(0, parseInt(String(dayStartHour), 10) || 0)) : null;
   try {
     const db = await getPool();
-    const [rows] = await db.execute(
-      `SELECT o.id, o.table_id AS tableId, t.area, o.status, o.subtotal, o.discount, o.tax, o.total, 
+    let sql = `SELECT o.id, o.table_id AS tableId, t.area, t.name AS tableName, o.status, o.subtotal, o.discount, o.tax, o.total, 
               o.employee_id AS employeeId, u.name AS employeeName, u.nickname AS employeeNickname,
               o.order_date AS orderDate, o.created_at AS time
        FROM orders o 
        LEFT JOIN pos_tables t ON t.branch_id = o.branch_id AND t.id = o.table_id
        LEFT JOIN users u ON u.employee_id = o.employee_id
-       WHERE o.branch_id = ? AND o.order_date BETWEEN ? AND ? ORDER BY o.created_at DESC`,
-      [branchId, fromDate, toDate]
-    );
+       WHERE o.branch_id = ?`;
+    const params = [branchId];
+    if (startHour != null && !isNaN(startHour)) {
+      const hourPad = String(startHour).padStart(2, "0");
+      sql += ` AND o.created_at >= CONCAT(?, ' ', ?, ':00:00') AND o.created_at < CONCAT(DATE_ADD(?, INTERVAL 1 DAY), ' ', ?, ':00:00')`;
+      params.push(fromDate, hourPad, toDate, hourPad);
+    } else {
+      sql += ` AND o.order_date BETWEEN ? AND ?`;
+      params.push(fromDate, toDate);
+    }
+    sql += ` ORDER BY o.created_at DESC`;
+    const [rows] = await db.execute(sql, params);
     const list = rows.map((r) => ({
       id: "ORD-" + r.id,
       tableId: r.tableId,
       area: r.area || "—",
-      table: r.tableId,
+      table: r.tableName != null ? r.tableName : (r.tableId || "—"),
       employee: r.employeeNickname || r.employeeName || r.employeeId || "—",
       subtotal: Number(r.subtotal),
       discount: Number(r.discount),
@@ -2401,6 +2472,12 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
     );
     const totalLdAll = Number(totalLdRows[0]?.totalLd ?? 0);
     
+    let taxRate = 12;
+    try {
+      const [setRows] = await db.execute("SELECT setting_value FROM settings WHERE setting_key = 'tax_rate' LIMIT 1");
+      if (setRows.length && setRows[0].setting_value != null) taxRate = Math.max(0, parseFloat(setRows[0].setting_value) || 12);
+    } catch (_) {}
+    
     const [staffList] = await db.execute(
       `SELECT id, employee_id, name, allowance, hourly, budget, commission_rate, incentive_rate, table_incentive, has_quota, quota_amount
        FROM users WHERE active = 1 AND branch_id = ?`,
@@ -2431,8 +2508,9 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
 
       const ldCount = Number(ldRows[0]?.ldCount || 0);
       const ldAmount = Number(ldRows[0]?.ldAmount || 0);
-      // Commission stored = total LD sales amount (SUM of drink prices for this lady)
-      const commission = ldAmount;
+      // Commission = LD amount excluding tax (waiter account should not include tax)
+      const taxMultiplier = 1 + taxRate / 100;
+      const commission = taxMultiplier > 0 ? ldAmount / taxMultiplier : ldAmount;
       // Incentive = total all-staff LD × rate
       const rate = Number(staff.incentive_rate || 0);
       const incentives = totalLdAll * rate;
@@ -3227,37 +3305,56 @@ app.get("/api/split-payments/:orderId", async (req, res) => {
 // TABLE TRANSFER / MERGE ENDPOINTS
 // ============================================================================
 
-// Transfer order to another table
+// Transfer order(s) to another table. If transferAll: true, move ALL pending orders from fromTable to toTable.
 app.post("/api/tables/transfer", async (req, res) => {
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
-    const { orderId, fromTable, toTable, transferredBy, reason } = req.body;
+    const { orderId, fromTable, toTable, transferredBy, reason, transferAll } = req.body;
     
-    const [targetOrder] = await db.execute(
+    const [targetOrders] = await db.execute(
       `SELECT id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending'`,
       [branchId, toTable]
     );
     
-    if (targetOrder.length > 0) {
+    if (targetOrders.length > 0) {
       return res.status(400).json({ 
         error: "Target table has active order. Use merge instead.",
-        existingOrderId: targetOrder[0].id 
+        existingOrderId: targetOrders[0].id 
       });
     }
     
-    await db.execute(`UPDATE orders SET table_id = ? WHERE id = ?`, [toTable, orderId]);
+    let orderIdsToMove = [];
+    if (transferAll && fromTable && toTable) {
+      const [sourceOrders] = await db.execute(
+        `SELECT id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending' ORDER BY id`,
+        [branchId, fromTable]
+      );
+      orderIdsToMove = sourceOrders.map((r) => r.id);
+    } else if (orderId && fromTable && toTable) {
+      orderIdsToMove = [orderId];
+    }
+    
+    if (orderIdsToMove.length === 0) {
+      return res.status(400).json({ error: "No orders to transfer" });
+    }
+    
+    for (const oid of orderIdsToMove) {
+      await db.execute(`UPDATE orders SET table_id = ? WHERE id = ?`, [toTable, oid]);
+      await db.execute(`
+        INSERT INTO table_transfers (order_id, from_table, to_table, transfer_type, transferred_by, reason)
+        VALUES (?, ?, ?, 'move', ?, ?)
+      `, [oid, fromTable, toTable, transferredBy || null, reason || null]);
+    }
     
     await db.execute(`UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?`, [branchId, fromTable]);
-    await db.execute(`UPDATE pos_tables SET status = 'occupied', current_order_id = ? WHERE branch_id = ? AND id = ?`, [orderId, branchId, toTable]);
+    const firstOrderId = orderIdsToMove[0];
+    await db.execute(`UPDATE pos_tables SET status = 'occupied', current_order_id = ? WHERE branch_id = ? AND id = ?`, [firstOrderId, branchId, toTable]);
     
-    // Log the transfer
-    await db.execute(`
-      INSERT INTO table_transfers (order_id, from_table, to_table, transfer_type, transferred_by, reason)
-      VALUES (?, ?, ?, 'move', ?, ?)
-    `, [orderId, fromTable, toTable, transferredBy, reason || null]);
-    
-    res.json({ ok: true, message: `Order transferred from ${fromTable} to ${toTable}` });
+    const msg = orderIdsToMove.length > 1
+      ? `${orderIdsToMove.length} orders transferred from ${fromTable} to ${toTable}`
+      : `Order transferred from ${fromTable} to ${toTable}`;
+    res.json({ ok: true, message: msg });
   } catch (err) {
     console.error("Transfer table error:", err);
     res.status(500).json({ error: "Failed to transfer order" });
