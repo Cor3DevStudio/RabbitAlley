@@ -20,6 +20,7 @@ import {
   VisuallyHidden,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 
 type PaymentMethod = "cash" | "gcash" | "debit" | "credit" | "bank" | "charge";
 type SplitMethod = "cash" | "gcash" | "bank" | "debit" | "credit" | "charge";
@@ -57,7 +58,7 @@ export default function POSTableOrder() {
     time: string;
     table: string;
     cashier: string;
-    items: Array<{ name: string; quantity: number; subtotal: number; isComplimentary?: boolean }>;
+    items: Array<{ name: string; quantity: number; subtotal: number; isComplimentary?: boolean; note?: string }>;
     subtotal: number;
     complimentary?: number;
     discount?: number;
@@ -101,6 +102,8 @@ export default function POSTableOrder() {
   const [voidPassword, setVoidPassword] = useState("");
   const [voidError, setVoidError] = useState<string | null>(null);
   const [voiding, setVoiding] = useState(false);
+  /** Item ids (order_items.id) selected to void in Request Void modal */
+  const [voidSelectedIds, setVoidSelectedIds] = useState<string[]>([]);
   const [itemVoidModalOpen, setItemVoidModalOpen] = useState(false);
   const [pendingVoidItem, setPendingVoidItem] = useState<OrderItem | null>(null);
   const [itemVoidEmployeeId, setItemVoidEmployeeId] = useState("");
@@ -637,8 +640,9 @@ export default function POSTableOrder() {
       setTimeout(() => printCashierOrderSlip(itemsToSend, result.orderId), printDelay);
       printDelay += 500;
 
-      // Auto-logout waiter after prints are triggered
-      const isWaiter = user?.role === "Staff" || user?.role === "Operations Staff";
+      // Auto-logout waiter after send (role from API is lowercase with underscore, e.g. staff, operations_staff)
+      const role = String(user?.role || "").toLowerCase();
+      const isWaiter = role === "staff" || role === "operations_staff";
       if (isWaiter) {
         setTimeout(() => {
           logout();
@@ -694,6 +698,9 @@ export default function POSTableOrder() {
     }) &&
     Math.abs(splitRemaining) < 0.01;
 
+  /** Sent order items that can be voided (have id and are not already voided) */
+  const voidableItems = combinedItems.filter((i): i is OrderItem & { id: string } => !!i.id && !i.isVoided);
+
   const openVoidModal = () => {
     if (!hasAnySentOrder) {
       toast.error("No sent orders to void");
@@ -703,6 +710,7 @@ export default function POSTableOrder() {
     setVoidEmployeeId("");
     setVoidPassword("");
     setVoidError(null);
+    setVoidSelectedIds([]);
     setVoidModalOpen(true);
   };
 
@@ -712,24 +720,23 @@ export default function POSTableOrder() {
       setVoidError("Manager Employee ID and password are required");
       return;
     }
-    const tabsToVoid = sentTabs.filter((tab) => tab.id);
-    if (!tabsToVoid.length) {
-      setVoidError("No sent orders to void");
+    if (voidSelectedIds.length === 0) {
+      setVoidError("Select at least one item to void");
       return;
     }
     setVoiding(true);
     setVoidError(null);
     try {
-      for (const tab of tabsToVoid) {
-        await api.orders.void(tab.id!, {
+      for (const itemId of voidSelectedIds) {
+        await api.orderItems.void(itemId, {
           employeeId: voidEmployeeId.trim(),
           password: voidPassword,
-          reason: voidReason.trim() || undefined,
         });
       }
       setVoidModalOpen(false);
+      setVoidSelectedIds([]);
       await refetchOrders();
-      toast.success("Orders voided. Receipt will show voided and manager name.");
+      toast.success(voidSelectedIds.length === 1 ? "Item voided." : `${voidSelectedIds.length} items voided. Receipt will show voided and manager name.`);
     } catch (e) {
       setVoidError(e instanceof Error ? e.message : "Failed to void");
     } finally {
@@ -896,7 +903,7 @@ export default function POSTableOrder() {
     time: string;
     table: string;
     cashier: string;
-    items: Array<{ name: string; quantity: number; subtotal: number; isComplimentary?: boolean }>;
+    items: Array<{ name: string; quantity: number; subtotal: number; isComplimentary?: boolean; note?: string }>;
     subtotal: number;
     complimentary?: number;
     discount?: number;
@@ -957,6 +964,7 @@ export default function POSTableOrder() {
             <span>${item.quantity}x ${item.name}</span>
             <span>₱${item.subtotal.toFixed(2)}</span>
           </div>
+          ${item.note ? `<div class="row" style="margin-left: 1em; font-size: 0.9em; color: #666;"><span>Note: ${item.note}</span></div>` : ""}
         `).join("")}
         <div class="line"></div>
         <div class="row"><span>Subtotal:</span><span>₱${receipt.subtotal.toFixed(2)}</span></div>
@@ -1024,7 +1032,7 @@ export default function POSTableOrder() {
           const noteSuffix = item.specialRequest ? ` - ${item.specialRequest}` : "";
           name = `${item.name}${ladySuffix}${noteSuffix}`;
         }
-        return { name, quantity: item.quantity, subtotal: item.isVoided ? 0 : item.subtotal, isComplimentary: item.isComplimentary };
+        return { name, quantity: item.quantity, subtotal: item.isVoided ? 0 : item.subtotal, isComplimentary: item.isComplimentary, note: item.specialRequest || undefined };
       }),
       subtotal: reprintSubtotal,
       complimentary: reprintComplimentary > 0 ? reprintComplimentary : undefined,
@@ -1497,7 +1505,7 @@ export default function POSTableOrder() {
                     <div className="space-y-2">
                       {barItems.map((item) => (
                         <div key={item.productId} className="flex justify-between">
-                          <span>{item.quantity}x {item.name}</span>
+                          <span>{item.quantity}x {item.name}{item.specialRequest && <em className="text-xs text-muted-foreground ml-1">({item.specialRequest})</em>}</span>
                         </div>
                       ))}
                     </div>
@@ -1571,7 +1579,7 @@ export default function POSTableOrder() {
                     <div className="space-y-2">
                       {kitchenItems.map((item) => (
                         <div key={item.productId} className="flex justify-between">
-                          <span>{item.quantity}x {item.name}</span>
+                          <span>{item.quantity}x {item.name}{item.specialRequest && <em className="text-xs text-muted-foreground ml-1">({item.specialRequest})</em>}</span>
                         </div>
                       ))}
                     </div>
@@ -2046,7 +2054,7 @@ export default function POSTableOrder() {
                             <X className="w-4 h-4" />
                           </Button>
                         </div>
-                        {split.method === "charge" && (
+                        {split.method === "charge" && chargeSplitsCount > 1 && (
                           <Input
                             placeholder="Customer name (required for charge)"
                             value={splitChargeNames[idx] || ""}
@@ -2079,6 +2087,27 @@ export default function POSTableOrder() {
                         ? `Split total matches base amount${splitCardSurcharge > 0 ? `. Card fee: +${formatCurrency(splitCardSurcharge)}` : ""}.`
                         : `Remaining: ${formatCurrency(splitRemaining)} (enter amounts to match ${formatCurrency(discountedTotal)})`}
                     </p>
+                    {/* When exactly one split is Charge/Utang, show one required customer name field so Pay Now can be enabled */}
+                    {chargeSplitsCount === 1 && (() => {
+                      const chargeIdx = splitPayments.findIndex((sp) => sp.method === "charge");
+                      if (chargeIdx === -1) return null;
+                      const value = (splitChargeNames[chargeIdx] || "").trim() || chargeCustomerName;
+                      return (
+                        <div className="pt-2 space-y-1">
+                          <label className="text-xs font-medium text-amber-700 dark:text-amber-400">Customer name (required for charge)</label>
+                          <Input
+                            placeholder="Enter customer name for Charge/Utang"
+                            value={value}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setChargeCustomerName(v);
+                              setSplitChargeNames((prev) => ({ ...prev, [chargeIdx]: v }));
+                            }}
+                            className="text-sm border-amber-500/50 focus-visible:ring-amber-500"
+                          />
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -2171,6 +2200,11 @@ export default function POSTableOrder() {
                 </div>
               )}
 
+              {useSplitPayment && !splitValid && chargeSplitsCount > 0 && Math.abs(splitRemaining) < 0.01 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Enter customer name for Charge/Utang above to enable Pay Now.
+                </p>
+              )}
               {/* Confirm Button */}
               <Button
                 className="w-full h-12 text-lg"
@@ -2390,18 +2424,59 @@ export default function POSTableOrder() {
         </DialogContent>
       </Dialog>
 
-      {/* Request Void Modal - Manager password, then order(s) marked voided on receipt */}
+      {/* Request Void Modal - Select items to void, then manager credentials */}
       <Dialog open={voidModalOpen} onOpenChange={setVoidModalOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg max-h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Lock className="w-5 h-5" />
-              Void Order(s)
+              Void Items
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Manager must enter credentials. Voided orders will show &quot;Voided&quot; and your name on the receipt.
+            Select the item(s) to void. Manager must enter credentials. Voided items will show &quot;Voided&quot; and your name on the receipt.
           </p>
+          {voidableItems.length > 0 ? (
+            <>
+              <div className="flex items-center justify-between border-b border-border pb-2">
+                <Label className="text-sm font-medium">Items to void</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() =>
+                    setVoidSelectedIds(voidSelectedIds.length === voidableItems.length ? [] : voidableItems.map((i) => i.id))
+                  }
+                >
+                  {voidSelectedIds.length === voidableItems.length ? "Clear selection" : "Select all"}
+                </Button>
+              </div>
+              <div className="overflow-y-auto max-h-[220px] border border-border rounded-md p-2 space-y-1">
+                {voidableItems.map((item) => (
+                  <label
+                    key={item.id}
+                    className="flex items-center gap-3 py-2 px-2 rounded hover:bg-muted/50 cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={voidSelectedIds.includes(item.id)}
+                      onCheckedChange={(checked) => {
+                        if (checked) setVoidSelectedIds((prev) => [...prev, item.id]);
+                        else setVoidSelectedIds((prev) => prev.filter((id) => id !== item.id));
+                      }}
+                    />
+                    <span className="flex-1 text-sm">
+                      {item.quantity}x {item.name}
+                      {item.specialRequest && <span className="text-muted-foreground ml-1">({item.specialRequest})</span>}
+                    </span>
+                    <span className="text-sm font-medium">{formatCurrency(item.subtotal)}</span>
+                  </label>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground py-2">No items available to void (all items may already be voided).</p>
+          )}
           <form onSubmit={handleRequestVoid} className="space-y-4 mt-4">
             <div>
               <Label>Reason (optional)</Label>
@@ -2434,7 +2509,9 @@ export default function POSTableOrder() {
             {voidError && <p className="text-sm text-destructive">{voidError}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setVoidModalOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={voiding}>{voiding ? "Voiding…" : "Void Order(s)"}</Button>
+              <Button type="submit" disabled={voiding || voidSelectedIds.length === 0}>
+                {voiding ? "Voiding…" : voidSelectedIds.length === 0 ? "Select items to void" : `Void ${voidSelectedIds.length} item${voidSelectedIds.length === 1 ? "" : "s"}`}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

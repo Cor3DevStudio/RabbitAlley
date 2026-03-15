@@ -1712,6 +1712,21 @@ app.patch("/api/products/:id", async (req, res) => {
   }
 });
 
+app.delete("/api/products/:id", async (req, res) => {
+  const id = req.params.id;
+  try {
+    const db = await getPool();
+    await db.execute("DELETE FROM product_area_prices WHERE product_id = ?", [id]);
+    const [r] = await db.execute("DELETE FROM products WHERE id = ?", [id]);
+    if (!r.affectedRows) return res.status(404).json({ error: "Product not found" });
+    logAudit(req, "product_delete", "product", id, {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Product delete error:", err);
+    res.status(500).json({ error: "Failed to delete product" });
+  }
+});
+
 // ---------- Staff (users; scoped by branch) ----------
 // LD Ladies: staff with incentive_rate > 0 (get paid per ladies drink)
 app.get("/api/staff/ld-ladies", async (req, res) => {
@@ -1912,6 +1927,23 @@ app.patch("/api/staff/:id/password", async (req, res) => {
   } catch (err) {
     console.error("Staff password reset error:", err);
     res.status(500).json({ error: "Failed to reset password" });
+  }
+});
+
+app.delete("/api/staff/:id", async (req, res) => {
+  const id = req.params.id;
+  const branchId = getBranchId(req);
+  try {
+    const db = await getPool();
+    const [r] = await db.execute("SELECT id FROM users WHERE id = ? AND branch_id = ?", [id, branchId]);
+    if (!r.length) return res.status(404).json({ error: "Staff not found" });
+    await db.execute("UPDATE order_items SET served_by = NULL WHERE served_by = ?", [id]);
+    await db.execute("DELETE FROM users WHERE id = ?", [id]);
+    logAudit(req, "staff_delete", "user", id, {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Staff delete error:", err);
+    res.status(500).json({ error: "Failed to delete staff" });
   }
 });
 
@@ -2145,7 +2177,7 @@ app.get("/api/reports/sales", async (req, res) => {
       id: "ORD-" + r.id,
       tableId: r.tableId,
       area: r.area || "—",
-      table: r.tableName != null ? r.tableName : (r.tableId || "—"),
+      table: r.tableName != null ? r.tableName : (r.tableId ? `Table ${r.tableId} (removed)` : "—"),
       employee: r.employeeNickname || r.employeeName || r.employeeId || "—",
       subtotal: Number(r.subtotal),
       discount: Number(r.discount),
@@ -3361,43 +3393,73 @@ app.post("/api/tables/transfer", async (req, res) => {
   }
 });
 
-// Merge orders from two tables (same branch)
+// Merge orders from two tables (same branch). Moves items from source order into target, then moves ALL remaining orders from source table to target table.
 app.post("/api/tables/merge", async (req, res) => {
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
     const { sourceOrderId, targetOrderId, transferredBy, reason } = req.body;
     
-    const [sourceItems] = await db.execute(`SELECT * FROM order_items WHERE order_id = ?`, [sourceOrderId]);
+    const [sourceOrder] = await db.execute(`SELECT branch_id, table_id FROM orders WHERE id = ?`, [sourceOrderId]);
+    const [targetOrder] = await db.execute(`SELECT table_id FROM orders WHERE id = ?`, [targetOrderId]);
+    if (!sourceOrder[0] || !targetOrder[0]) {
+      return res.status(404).json({ error: "Source or target order not found" });
+    }
+    if (sourceOrder[0].branch_id != null && String(sourceOrder[0].branch_id) !== branchId) {
+      return res.status(403).json({ error: "Orders must belong to the same branch" });
+    }
+    const sourceTableId = sourceOrder[0].table_id;
+    const targetTableId = targetOrder[0].table_id;
     
+    // Move items from source order into target order
+    const [sourceItems] = await db.execute(`SELECT * FROM order_items WHERE order_id = ?`, [sourceOrderId]);
     for (const item of sourceItems) {
       await db.execute(`UPDATE order_items SET order_id = ? WHERE id = ?`, [targetOrderId, item.id]);
     }
     
-    const [sourceOrder] = await db.execute(`SELECT branch_id, table_id FROM orders WHERE id = ?`, [sourceOrderId]);
-    const [targetOrder] = await db.execute(`SELECT table_id FROM orders WHERE id = ?`, [targetOrderId]);
-    if (sourceOrder[0]?.branch_id != null && String(sourceOrder[0].branch_id) !== branchId) {
-      return res.status(403).json({ error: "Orders must belong to the same branch" });
-    }
-    
-    const [totals] = await db.execute(`
-      SELECT COALESCE(SUM(subtotal), 0) as subtotal FROM order_items WHERE order_id = ?
-    `, [targetOrderId]);
+    const [totals] = await db.execute(
+      `SELECT COALESCE(SUM(subtotal), 0) as subtotal FROM order_items WHERE order_id = ?`,
+      [targetOrderId]
+    );
     await db.execute(`UPDATE orders SET subtotal = ?, total = ? WHERE id = ?`, 
       [totals[0].subtotal, totals[0].subtotal, targetOrderId]);
     
     await db.execute(`DELETE FROM orders WHERE id = ?`, [sourceOrderId]);
     
-    if (sourceOrder[0]) {
-      await db.execute(`UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?`, 
-        [branchId, sourceOrder[0].table_id]);
+    // Move ALL remaining pending orders from source table to target table (so source table is fully cleared)
+    const [remaining] = await db.execute(
+      `SELECT id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending' ORDER BY id`,
+      [branchId, sourceTableId]
+    );
+    for (const row of remaining) {
+      await db.execute(`UPDATE orders SET table_id = ? WHERE id = ?`, [targetTableId, row.id]);
+      await db.execute(`
+        INSERT INTO table_transfers (order_id, from_table, to_table, transfer_type, transferred_by, reason)
+        VALUES (?, ?, ?, 'move', ?, ?)
+      `, [row.id, sourceTableId, targetTableId, transferredBy || null, reason || null]);
     }
     
-    // Log the merge
+    // Only now set source table to available (no more orders there)
+    await db.execute(
+      `UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?`,
+      [branchId, sourceTableId]
+    );
+    // Ensure target table is occupied (use first order id we have)
+    const [targetOrders] = await db.execute(
+      `SELECT id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending' ORDER BY id LIMIT 1`,
+      [branchId, targetTableId]
+    );
+    if (targetOrders.length > 0) {
+      await db.execute(
+        `UPDATE pos_tables SET status = 'occupied', current_order_id = ? WHERE branch_id = ? AND id = ?`,
+        [targetOrders[0].id, branchId, targetTableId]
+      );
+    }
+    
     await db.execute(`
       INSERT INTO table_transfers (order_id, from_table, to_table, transfer_type, transferred_by, reason)
       VALUES (?, ?, ?, 'merge', ?, ?)
-    `, [targetOrderId, sourceOrder[0]?.table_id || 'unknown', targetOrder[0]?.table_id || 'unknown', transferredBy, reason || null]);
+    `, [targetOrderId, sourceTableId, targetTableId, transferredBy, reason || null]);
     
     res.json({ ok: true, message: "Orders merged successfully" });
   } catch (err) {

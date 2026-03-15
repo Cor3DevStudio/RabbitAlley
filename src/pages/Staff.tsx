@@ -78,9 +78,9 @@ export default function Staff() {
   const [saving, setSaving] = useState(false);
 
   const handleDelete = async (s: StaffMember) => {
-    if (!window.confirm(`Delete "${s.name}"? They will be removed from the active staff list and cannot log in. You can reactivate from Edit.`)) return;
+    if (!window.confirm(`Delete "${s.name}"? They will be permanently removed from the staff list and cannot log in. You can add them again later.`)) return;
     try {
-      await api.staff.setStatus(s.id, "inactive");
+      await api.staff.delete(s.id);
       toast.success(`${s.name} deleted`);
       loadStaff();
     } catch (e) {

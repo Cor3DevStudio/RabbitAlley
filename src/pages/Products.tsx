@@ -223,9 +223,9 @@ export default function Products() {
   };
 
   const handleDelete = async (product: Product) => {
-    if (!window.confirm(`Delete "${product.name}"? It will be removed from the product list and no longer appear in POS. You can add it again later.`)) return;
+    if (!window.confirm(`Delete "${product.name}"? It will be permanently removed from the product list. You can add it again later.`)) return;
     try {
-      await api.products.setStatus(product.id, "inactive");
+      await api.products.delete(product.id);
       toast.success(`${product.name} deleted`);
       loadProducts();
     } catch (e) {

@@ -197,6 +197,7 @@ export const api = {
     update: (id: string, body: { sku: string; name: string; description?: string; category?: string; sub_category?: string; department?: string; price?: number; cost?: number; commission?: number; status?: string; pricesByArea?: { Lounge?: number; Club?: number; LD?: number } }) =>
       fetchApi<{ id: string; sku: string; name: string; description?: string; category: string; sub_category?: string; department: string; price: number; cost: number; commission: number; status: string; pricesByArea?: Record<string, number> }>(`/api/products/${id}`, { method: "PUT", body: JSON.stringify(body) }),
     setStatus: (id: string, status: string) => fetchApi<{ ok: boolean }>(`/api/products/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+    delete: (id: string) => fetchApi<{ ok: boolean }>(`/api/products/${id}`, { method: "DELETE" }),
   },
   staff: {
     ldLadies: () =>
@@ -222,6 +223,7 @@ export const api = {
       }>("/api/staff", { method: "POST", body: JSON.stringify(body) }),
     setStatus: (id: string, status: "active" | "inactive") =>
       fetchApi<{ ok: boolean; status: string }>(`/api/staff/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
+    delete: (id: string) => fetchApi<{ ok: boolean }>(`/api/staff/${id}`, { method: "DELETE" }),
     update: (id: string, body: { 
       code?: string; name?: string; nickname?: string; type?: string; allowance?: number; hourly?: number;
       budget?: number; commissionRate?: number; incentiveRate?: number; tableIncentive?: number;

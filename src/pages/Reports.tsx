@@ -325,7 +325,7 @@ export default function Reports() {
   const [computeStep, setComputeStep] = useState("");
   const [orderDetail, setOrderDetail] = useState<Awaited<ReturnType<typeof api.orders.detail>> | null>(null);
   const [orderDetailLoading, setOrderDetailLoading] = useState(false);
-  const [salesViewMode, setSalesViewMode] = useState<"order" | "table">("order");
+  const [salesViewMode, setSalesViewMode] = useState<"order" | "table">("table");
   const [dayStartHour, setDayStartHour] = useState<number | "">("");
 
   const loadSalesStable = useCallback(async () => {
@@ -1026,7 +1026,7 @@ export default function Reports() {
             />
           </div>
 
-          <div className="rounded-lg border border-border overflow-hidden max-h-[70vh] overflow-y-auto">
+          <div className="rounded-lg border border-border overflow-hidden max-h-[75vh] overflow-y-auto min-h-[200px]">
             <Table>
               <TableHeader className="sticky top-0 bg-muted/95 z-10">
                 <TableRow>
