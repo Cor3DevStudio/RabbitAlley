@@ -22,6 +22,7 @@ import compression from "compression";
 import bcrypt from "bcrypt";
 import mysql from "mysql2/promise";
 import ThermalPrinter from "node-thermal-printer";
+import { buildCustomerReceipt, buildDeptChit, buildOrderSlip } from "./lib/receiptEscPos.js";
 
 const {
   DB_HOST = "localhost",
@@ -1431,6 +1432,42 @@ app.post("/api/print/order-slip", async (req, res) => {
   } catch (err) {
     console.warn("Order slip print error:", err.message);
     res.json({ ok: false, error: err.message });
+  }
+});
+
+// ---------- QZ Tray: ESC/POS payloads (browser prints via local QZ Tray) ----------
+app.post("/api/print/qz-payload/receipt", (req, res) => {
+  try {
+    const { receipt } = req.body || {};
+    if (!receipt) return res.status(400).json({ error: "receipt required" });
+    const buf = buildCustomerReceipt(receipt);
+    res.json({ base64: buf.toString("base64") });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Failed to build receipt" });
+  }
+});
+app.post("/api/print/qz-payload/dept-receipt", (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.dept || !Array.isArray(body.items)) {
+      return res.status(400).json({ error: "dept and items required" });
+    }
+    const buf = buildDeptChit(body);
+    res.json({ base64: buf.toString("base64") });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Failed to build chit" });
+  }
+});
+app.post("/api/print/qz-payload/order-slip", (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.items || !Array.isArray(body.items)) {
+      return res.status(400).json({ error: "items required" });
+    }
+    const buf = buildOrderSlip(body);
+    res.json({ base64: buf.toString("base64") });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Failed to build slip" });
   }
 });
 

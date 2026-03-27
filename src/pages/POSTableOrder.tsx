@@ -4,6 +4,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { api, type OrderItem } from "@/lib/api";
 import { getReceiptPrinterForArea, getDeptPrinter } from "@/lib/storage-keys";
+import { isQzTrayEnabled, qzPrintRawBase64 } from "@/lib/qzTray";
 import { getPosSettings } from "@/lib/posSettings";
 import { mapApiTable, type Table, type Product } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
@@ -333,27 +334,36 @@ export default function POSTableOrder() {
       // Map deptTitle ("BAR" / "KITCHEN" / "LD") to the dept key used in storage ("Bar" / "Kitchen" / "LD")
       const deptKey = deptTitle === "BAR" ? "Bar" : deptTitle === "KITCHEN" ? "Kitchen" : "LD";
       const printerName = getDeptPrinter(deptKey);
-
-      // Send to LAN printer via backend only — browser print dialog is disabled
+      const payload = {
+        dept: deptKey,
+        title: deptTitle,
+        subtitle,
+        items: items.map((i) => ({ name: i.name, quantity: i.quantity, servedByName: i.servedByName, specialRequest: i.specialRequest })),
+        table: table.name,
+        area: table.area,
+        encoder: encoderName,
+        orderNumber,
+        date: dateStr,
+        time: timeStr,
+      };
       try {
-        const result = await api.print.deptReceipt({
-          dept: deptKey,
-          title: deptTitle,
-          subtitle,
-          items: items.map((i) => ({ name: i.name, quantity: i.quantity, servedByName: i.servedByName, specialRequest: i.specialRequest })),
-          table: table.name,
-          area: table.area,
-          encoder: encoderName,
-          orderNumber,
-          date: dateStr,
-          time: timeStr,
-          printerName,
-        });
-        if (!result.ok) {
-          toast.warning(`${deptTitle} chit not printed: ${result.error || "No printer configured"}. Set a LAN printer for ${deptTitle} in Settings.`);
+        if (isQzTrayEnabled()) {
+          if (!printerName?.trim()) {
+            toast.warning(`${deptTitle} chit: set ${deptKey} printer in Settings (QZ Tray).`);
+            return;
+          }
+          const { base64 } = await api.print.qzPayload.deptReceipt(payload);
+          await qzPrintRawBase64(printerName, base64);
+        } else {
+          const result = await api.print.deptReceipt({ ...payload, printerName });
+          if (!result.ok) {
+            toast.warning(`${deptTitle} chit not printed: ${result.error || "No printer configured"}. Set a LAN printer for ${deptTitle} in Settings.`);
+          }
         }
-      } catch {
-        toast.warning(`${deptTitle} chit not printed. Set a LAN printer for ${deptTitle} in Settings.`);
+      } catch (e) {
+        toast.warning(
+          `${deptTitle} chit not printed: ${e instanceof Error ? e.message : "Check QZ Tray is running and printer name matches Settings."}`
+        );
       }
     },
     [table, user?.name, tableId]
@@ -367,20 +377,27 @@ export default function POSTableOrder() {
       const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
       const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
       const slipSubtotal = items.reduce((s, i) => s + i.subtotal, 0);
-      // Use the cashier (area) printer; fall back to Bar printer if none
-      const printerName = getDeptPrinter("Bar") || undefined;
+      // Cashier / area receipt printer — same routing as payment receipt (not Bar dept chit printer)
+      const printerName = getReceiptPrinterForArea(table.area) || undefined;
+      const slipBody = {
+        orderId,
+        table: table.name,
+        area: table.area,
+        waiter: user?.name || "Staff",
+        date: dateStr,
+        time: timeStr,
+        subtotal: slipSubtotal,
+        items: items.map((i) => ({ name: i.name, quantity: i.quantity, subtotal: i.subtotal, specialRequest: i.specialRequest })),
+      };
       try {
-        await api.print.orderSlip({
-          orderId,
-          table: table.name,
-          area: table.area,
-          waiter: user?.name || "Staff",
-          date: dateStr,
-          time: timeStr,
-          subtotal: slipSubtotal,
-          items: items.map((i) => ({ name: i.name, quantity: i.quantity, subtotal: i.subtotal, specialRequest: i.specialRequest })),
-          printerName: printerName ?? null,
-        });
+        if (isQzTrayEnabled()) {
+          if (printerName?.trim()) {
+            const { base64 } = await api.print.qzPayload.orderSlip(slipBody);
+            await qzPrintRawBase64(printerName, base64);
+          }
+        } else {
+          await api.print.orderSlip({ ...slipBody, printerName: printerName ?? null });
+        }
       } catch {
         // silently skip — order was still sent, slip is optional
       }
@@ -875,14 +892,21 @@ export default function POSTableOrder() {
       };
       setLastReceiptForPrint(receiptData);
 
-      // Print via backend only — no browser print dialog; receipt goes straight to the printer set in Settings for this area
       let receiptSent = false;
       try {
         const printerName = getReceiptPrinterForArea(table?.area) || undefined;
-        const printResult = await api.print.receipt(receiptData, printerName);
-        if (printResult.ok) receiptSent = true;
+        if (isQzTrayEnabled()) {
+          if (printerName?.trim()) {
+            const { base64 } = await api.print.qzPayload.receipt(receiptData as Record<string, unknown>);
+            await qzPrintRawBase64(printerName, base64);
+            receiptSent = true;
+          }
+        } else {
+          const printResult = await api.print.receipt(receiptData, printerName);
+          if (printResult.ok) receiptSent = true;
+        }
       } catch (_printErr) {
-        // Backend print failed
+        // print failed
       }
 
       await new Promise((resolve) => setTimeout(resolve, 1500));

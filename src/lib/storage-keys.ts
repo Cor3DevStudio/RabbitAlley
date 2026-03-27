@@ -34,6 +34,8 @@ export function getReceiptPrinterForArea(area: string | undefined): string | nul
 // ── Department (chit) printers: BAR, KITCHEN, LD ─────────────────────────────
 /** Per-dept chit printers. Value: JSON object { Bar?: string, Kitchen?: string, LD?: string }. */
 export const DEPT_PRINTERS_KEY = "pos_dept_printers";
+/** When "1", customer receipt & dept chits print via QZ Tray (this PC) instead of server LAN. */
+export const QZ_TRAY_ENABLED_KEY = "pos_qz_tray_enabled";
 
 export const POS_DEPTS = ["Bar", "Kitchen", "LD"] as const;
 export type PosDept = (typeof POS_DEPTS)[number];

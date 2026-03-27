@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -25,6 +26,7 @@ import {
   type DeptPrinters,
 } from "@/lib/storage-keys";
 import { getPosSettings, savePosSettings } from "@/lib/posSettings";
+import { isQzTrayEnabled, setQzTrayEnabled, qzListPrinters } from "@/lib/qzTray";
 
 export default function Settings() {
   const local = getPosSettings();
@@ -52,6 +54,10 @@ export default function Settings() {
       return { Lounge: "", Club: "", LD: "" };
     }
   });
+  const [qzTrayOn, setQzTrayOn] = useState(() => isQzTrayEnabled());
+  const [qzPrinters, setQzPrinters] = useState<string[]>([]);
+  const [qzLoading, setQzLoading] = useState(false);
+
   const [deptPrinters, setDeptPrinters] = useState<DeptPrinters>(() => {
     try {
       const raw = localStorage.getItem(DEPT_PRINTERS_KEY);
@@ -312,8 +318,72 @@ export default function Settings() {
           </Card>
         </div>
 
-        {/* Right panel: Tax & Charges */}
+        {/* Right panel: QZ Tray, Tax & Charges */}
         <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>QZ Tray printing</CardTitle>
+              <CardDescription>
+                Print via{" "}
+                <a href="https://qz.io/download/" target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                  QZ Tray
+                </a>{" "}
+                on this PC (USB / Windows printers). Server LAN printing stays available when this is off.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium">Use QZ Tray</p>
+                  <p className="text-xs text-muted-foreground">
+                    Printer names below must match QZ exactly (use Load printers).
+                  </p>
+                </div>
+                <Switch
+                  checked={qzTrayOn}
+                  onCheckedChange={(on) => {
+                    setQzTrayOn(on);
+                    setQzTrayEnabled(on);
+                    toast.success(on ? "QZ Tray mode on" : "LAN / server printing");
+                  }}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={qzLoading}
+                onClick={async () => {
+                  setQzLoading(true);
+                  try {
+                    const list = await qzListPrinters();
+                    setQzPrinters(list);
+                    toast.success(`QZ: ${list.length} printer(s)`);
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Start QZ Tray and allow this site.");
+                  } finally {
+                    setQzLoading(false);
+                  }
+                }}
+              >
+                {qzLoading ? "Connecting…" : "Load printers from QZ Tray"}
+              </Button>
+              {qzPrinters.length > 0 && (
+                <p className="text-xs text-muted-foreground break-all">
+                  {qzPrinters.slice(0, 6).join(" · ")}
+                  {qzPrinters.length > 6 ? ` … +${qzPrinters.length - 6}` : ""}
+                </p>
+              )}
+              <p className="text-xs text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-md p-2">
+                Allow your POS URL in QZ Tray (e.g. <code className="bg-muted px-1">localhost:5173</code>). Production:{" "}
+                <a href="https://qz.io/docs/signing" className="underline" target="_blank" rel="noopener noreferrer">
+                  certificate signing
+                </a>
+                .
+              </p>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Tax & Service Charge</CardTitle>

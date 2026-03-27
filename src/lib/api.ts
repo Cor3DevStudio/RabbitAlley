@@ -361,6 +361,15 @@ export const api = {
       allowance: number; hours: number; perHour: number; commission: number; incentives: number; adjustments: number; deductions: number;
       gross: number; netPayout: number; status: string; approvedBy?: string | null;
     }) => fetchApi<{ ok: boolean; error?: string; fallback?: boolean }>("/api/print/payslip", { method: "POST", body: JSON.stringify({ payslip }) }),
+    /** ESC/POS base64 for QZ Tray (browser → local USB thermal) */
+    qzPayload: {
+      receipt: (receipt: Record<string, unknown>) =>
+        fetchApi<{ base64: string }>("/api/print/qz-payload/receipt", { method: "POST", body: JSON.stringify({ receipt }) }),
+      deptReceipt: (body: Record<string, unknown>) =>
+        fetchApi<{ base64: string }>("/api/print/qz-payload/dept-receipt", { method: "POST", body: JSON.stringify(body) }),
+      orderSlip: (body: Record<string, unknown>) =>
+        fetchApi<{ base64: string }>("/api/print/qz-payload/order-slip", { method: "POST", body: JSON.stringify(body) }),
+    },
   },
   // ============================================================================
   // ATTENDANCE (TIME TRACKING)
