@@ -5,6 +5,7 @@ export interface PosRuntimeSettings {
   businessName: string;
   address: string;
   contact: string;
+  vatTin: string;
   receiptFooter: string;
   taxRate: number;
   serviceChargeMode: "percent" | "fixed";
@@ -16,6 +17,7 @@ export const DEFAULT_POS_SETTINGS: PosRuntimeSettings = {
   businessName: "Rabbit Alley",
   address: "123 Main Street, Manila, Philippines",
   contact: "+63 912 345 6789",
+  vatTin: "123-456-789-000",
   receiptFooter: "Thank you for visiting Rabbit Alley!",
   taxRate: 12,
   serviceChargeMode: "percent",
@@ -34,6 +36,7 @@ function sanitizeSettings(raw: Partial<PosRuntimeSettings> | null | undefined): 
     businessName: (raw?.businessName || DEFAULT_POS_SETTINGS.businessName).toString(),
     address: (raw?.address || DEFAULT_POS_SETTINGS.address).toString(),
     contact: (raw?.contact || DEFAULT_POS_SETTINGS.contact).toString(),
+    vatTin: (raw?.vatTin || DEFAULT_POS_SETTINGS.vatTin).toString(),
     receiptFooter: (raw?.receiptFooter || DEFAULT_POS_SETTINGS.receiptFooter).toString(),
     taxRate: clampNumber(raw?.taxRate, DEFAULT_POS_SETTINGS.taxRate, 0, 100),
     serviceChargeMode: raw?.serviceChargeMode === "fixed" ? "fixed" : "percent",

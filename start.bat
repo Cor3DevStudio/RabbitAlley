@@ -77,16 +77,24 @@ echo  [INFO] API server port : %API_PORT%
 echo  [INFO] Frontend port   : %VITE_PORT%
 echo.
 
-:: ---- Clean DB on start (keep products & users only) ----
-echo  [CLEAN] Resetting database (occupied tables, orders; keeping products ^& users)...
-cd server
-node scripts/clean-db-on-start.js
-set "CLEAN_EXIT=!errorlevel!"
-cd ..
-if !CLEAN_EXIT! neq 0 (
-    echo  [WARN] Clean-db failed. Check MySQL is running and server\.env. Continuing...
+:: ---- Optional clean DB on start (disabled by default) ----
+set "DO_CLEAN_DB=0"
+if /I "%~1"=="clean" set "DO_CLEAN_DB=1"
+
+if "%DO_CLEAN_DB%"=="1" (
+    echo  [CLEAN] Resetting database: occupied tables and orders, keeping products ^& users...
+    cd server
+    node scripts/clean-db-on-start.js
+    set "CLEAN_EXIT=!errorlevel!"
+    cd ..
+    if !CLEAN_EXIT! neq 0 (
+        echo  [WARN] Clean-db failed. Check MySQL is running and server\.env. Continuing...
+    ) else (
+        echo  [OK] Database cleaned.
+    )
 ) else (
-    echo  [OK] Database cleaned.
+    echo  [INFO] Database clean on startup is disabled to preserve table/order state.
+    echo  [INFO] Use "start.bat clean" when you intentionally want a reset.
 )
 echo.
 

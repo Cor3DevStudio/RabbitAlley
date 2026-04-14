@@ -33,6 +33,7 @@ export default function Settings() {
   const [businessName, setBusinessName] = useState(local.businessName);
   const [address, setAddress] = useState(local.address);
   const [contact, setContact] = useState(local.contact);
+  const [vatTin, setVatTin] = useState(local.vatTin);
   const [receiptFooter, setReceiptFooter] = useState(local.receiptFooter);
   const [taxRate, setTaxRate] = useState(String(local.taxRate));
   const [serviceChargeMode, setServiceChargeMode] = useState<"percent" | "fixed">(local.serviceChargeMode);
@@ -78,6 +79,7 @@ export default function Settings() {
         businessName: dbSettings.business_name ?? local.businessName,
         address: dbSettings.business_address ?? local.address,
         contact: dbSettings.business_contact ?? local.contact,
+        vatTin: dbSettings.vat_tin ?? local.vatTin,
         receiptFooter: dbSettings.receipt_footer ?? local.receiptFooter,
         taxRate: dbSettings.tax_rate != null ? Number(dbSettings.tax_rate) : local.taxRate,
         serviceChargeMode: (dbSettings.service_charge_mode === "fixed" ? "fixed" : "percent") as "percent" | "fixed",
@@ -88,6 +90,7 @@ export default function Settings() {
       setBusinessName(merged.businessName);
       setAddress(merged.address);
       setContact(merged.contact);
+      setVatTin(merged.vatTin);
       setReceiptFooter(merged.receiptFooter);
       setTaxRate(String(merged.taxRate));
       setServiceChargeMode(merged.serviceChargeMode);
@@ -142,6 +145,7 @@ export default function Settings() {
       businessName: businessName.trim() || "Rabbit Alley",
       address: address.trim(),
       contact: contact.trim(),
+      vatTin: vatTin.trim(),
       receiptFooter: receiptFooter.trim(),
       taxRate: tax,
       serviceChargeMode,
@@ -155,6 +159,7 @@ export default function Settings() {
         business_name: newSettings.businessName,
         business_address: newSettings.address,
         business_contact: newSettings.contact,
+        vat_tin: newSettings.vatTin,
         receipt_footer: newSettings.receiptFooter,
         tax_rate: String(newSettings.taxRate),
         service_charge_mode: newSettings.serviceChargeMode,
@@ -213,6 +218,15 @@ export default function Settings() {
                   value={contact}
                   onChange={(e) => setContact(e.target.value)}
                   placeholder="+63 912 345 6789"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="vatTin">TIN Number</Label>
+                <Input
+                  id="vatTin"
+                  value={vatTin}
+                  onChange={(e) => setVatTin(e.target.value)}
+                  placeholder="123-456-789-000"
                 />
               </div>
             </CardContent>

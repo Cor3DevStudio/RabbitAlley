@@ -387,7 +387,7 @@ export default function POSTableOrder() {
         date: dateStr,
         time: timeStr,
         subtotal: slipSubtotal,
-        items: items.map((i) => ({ name: i.name, quantity: i.quantity, subtotal: i.subtotal, specialRequest: i.specialRequest })),
+        items: items.map((i) => ({ name: i.name, quantity: i.quantity, subtotal: i.subtotal, servedByName: i.servedByName, specialRequest: i.specialRequest })),
       };
       try {
         if (isQzTrayEnabled()) {
@@ -432,6 +432,15 @@ export default function POSTableOrder() {
   const orderItems = activeTab?.items ?? [];
   const orderSent = activeTab?.sent ?? false;
   const hasAnySentOrder = orderTabs.some((t) => t.sent);
+  const orderTabRows = useMemo(() => {
+    const rows: Array<Array<{ tab: OrderTab; idx: number }>> = [];
+    orderTabs.forEach((tab, idx) => {
+      const rowIndex = Math.floor(idx / 10);
+      if (!rows[rowIndex]) rows[rowIndex] = [];
+      rows[rowIndex].push({ tab, idx });
+    });
+    return rows;
+  }, [orderTabs]);
   const canAddItems = canAddToOrder && activeTab && !activeTab.sent;
   const requiresLdLadySelection = selectedCategory === "Ladies Drink" && !selectedLdLadyForCategory;
 
@@ -684,10 +693,11 @@ export default function POSTableOrder() {
   const discountedTax = discountedSubtotal * taxRateDecimal;
   const discountedServiceCharge = computeServiceCharge(discountedSubtotal);
   const discountedTotal = discountedSubtotal + discountedTax + discountedServiceCharge;
-  // Card surcharge: for non-split use selected method; for split calculate per card entry
+  // Card surcharge: for non-split use selected method; for split support both input styles:
+  // (a) card split entered as base amount, or (b) entered as collected amount incl. surcharge.
   const hasCardSurcharge = !useSplitPayment && (selectedPaymentMethod === "debit" || selectedPaymentMethod === "credit");
   const cardSurcharge = hasCardSurcharge ? discountedSubtotal * cardSurchargeDecimal : 0;
-  const splitCardSurcharge = useSplitPayment
+  const splitCardSurchargeRaw = useSplitPayment
     ? splitPayments.reduce((sum, sp) => {
         if (sp.method === "debit" || sp.method === "credit") {
           return sum + (Number(sp.amount) || 0) * cardSurchargeDecimal;
@@ -695,11 +705,38 @@ export default function POSTableOrder() {
         return sum;
       }, 0)
     : 0;
+  const splitBaseTotalAdjusted = useSplitPayment
+    ? splitPayments.reduce((sum, sp) => {
+        const amt = Number(sp.amount) || 0;
+        if (sp.method === "debit" || sp.method === "credit") {
+          return sum + (amt / (1 + cardSurchargeDecimal));
+        }
+        return sum + amt;
+      }, 0)
+    : 0;
+  const splitCardSurchargeAdjusted = useSplitPayment
+    ? splitPayments.reduce((sum, sp) => {
+        const amt = Number(sp.amount) || 0;
+        if (sp.method === "debit" || sp.method === "credit") {
+          return sum + (amt - amt / (1 + cardSurchargeDecimal));
+        }
+        return sum;
+      }, 0)
+    : 0;
+  const splitTotal = splitPayments.reduce((sum, split) => sum + (Number(split.amount) || 0), 0);
+  const splitBaseTotalRaw = splitTotal;
+  const useAdjustedSplitMath =
+    useSplitPayment &&
+    Math.abs(discountedTotal - splitBaseTotalAdjusted) < Math.abs(discountedTotal - splitBaseTotalRaw);
+  const splitCardSurcharge = useSplitPayment
+    ? (useAdjustedSplitMath ? splitCardSurchargeAdjusted : splitCardSurchargeRaw)
+    : 0;
   const finalTotal = discountedTotal + (useSplitPayment ? splitCardSurcharge : cardSurcharge);
   const change = amountTendered ? Math.max(0, parseFloat(amountTendered) - finalTotal) : 0;
-  // For split: entered amounts must sum to base discounted total (card surcharge added automatically)
-  const splitTotal = splitPayments.reduce((sum, split) => sum + (Number(split.amount) || 0), 0);
-  const splitRemaining = discountedTotal - splitTotal;
+  // For split: validate against discounted base total using whichever interpretation is closer:
+  // raw (base input) vs adjusted (card input includes surcharge).
+  const splitBaseTotal = useAdjustedSplitMath ? splitBaseTotalAdjusted : splitBaseTotalRaw;
+  const splitRemaining = discountedTotal - splitBaseTotal;
   // When only one split is "charge", allow using main chargeCustomerName if split name empty
   const chargeSplitsCount = splitPayments.filter((sp) => sp.method === "charge").length;
   const splitValid =
@@ -868,6 +905,13 @@ export default function POSTableOrder() {
         time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
         table: `${table?.area} - ${table?.name}`,
         cashier: user?.name || "Staff",
+        businessName: posSettings.businessName,
+        businessAddress: posSettings.address,
+        businessContact: posSettings.contact,
+        receiptFooter: posSettings.receiptFooter,
+        vatTin: posSettings.vatTin,
+        serviceLabel,
+        taxLabel,
         items: combinedItems.map((item) => {
           let name: string;
           if (item.isVoided) {
@@ -927,6 +971,13 @@ export default function POSTableOrder() {
     time: string;
     table: string;
     cashier: string;
+    businessName?: string;
+    businessAddress?: string;
+    businessContact?: string;
+    receiptFooter?: string;
+    vatTin?: string;
+    serviceLabel?: string;
+    taxLabel?: string;
     items: Array<{ name: string; quantity: number; subtotal: number; isComplimentary?: boolean; note?: string }>;
     subtotal: number;
     complimentary?: number;
@@ -970,10 +1021,9 @@ export default function POSTableOrder() {
       </head>
       <body>
         <div class="center">
-          <h1>RABBIT ALLEY</h1>
-          <div>Bar & Restaurant</div>
-          <div>123 Main Street, City</div>
-          <div>Tel: (02) 123-4567</div>
+          <h1>${receipt.businessName || "RABBIT ALLEY"}</h1>
+          <div>${receipt.businessAddress || "123 Main Street, City"}</div>
+          <div>${receipt.businessContact || "Tel: (02) 123-4567"}</div>
         </div>
         <div class="line"></div>
         <div class="row"><span>Order #:</span><span>${receipt.orderNumber}</span></div>
@@ -994,8 +1044,8 @@ export default function POSTableOrder() {
         <div class="row"><span>Subtotal:</span><span>₱${receipt.subtotal.toFixed(2)}</span></div>
         ${receipt.complimentary ? `<div class="row"><span>Less Compli:</span><span>-₱${receipt.complimentary.toFixed(2)}</span></div>` : ""}
         ${receipt.discount ? `<div class="row"><span>Discount:</span><span>-₱${receipt.discount.toFixed(2)}</span></div>` : ""}
-        <div class="row"><span>${serviceLabel}:</span><span>₱${receipt.serviceCharge.toFixed(2)}</span></div>
-        <div class="row"><span>${taxLabel}:</span><span>₱${receipt.tax.toFixed(2)}</span></div>
+        <div class="row"><span>${receipt.serviceLabel || serviceLabel}:</span><span>₱${receipt.serviceCharge.toFixed(2)}</span></div>
+        <div class="row"><span>${receipt.taxLabel || taxLabel}:</span><span>₱${receipt.tax.toFixed(2)}</span></div>
         ${receipt.cardSurcharge ? `<div class="row"><span>Card Fee (${posSettings.cardSurcharge.toFixed(2).replace(/\.00$/, "")}%):</span><span>₱${receipt.cardSurcharge.toFixed(2)}</span></div>` : ""}
         <div class="line"></div>
         <div class="row bold"><span>TOTAL:</span><span>₱${receipt.total.toFixed(2)}</span></div>
@@ -1005,11 +1055,11 @@ export default function POSTableOrder() {
         <div class="row"><span>Change:</span><span>₱${receipt.change.toFixed(2)}</span></div>
         <div class="line"></div>
         <div class="center">
-          <div class="bold">Thank you for dining with us!</div>
+          <div class="bold">${receipt.receiptFooter || "Thank you for dining with us!"}</div>
           <div>Please come again</div>
           <br>
           <div>This serves as your OFFICIAL RECEIPT</div>
-          <div>VAT Reg TIN: 123-456-789-000</div>
+          <div>VAT Reg TIN: ${receipt.vatTin || "123-456-789-000"}</div>
         </div>
       </body>
       </html>
@@ -1030,6 +1080,109 @@ export default function POSTableOrder() {
     }
   };
 
+  const printBillSummaryViaBrowser = () => {
+    if (!table || !hasAnySentOrder) {
+      toast.error("No sent orders to print");
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "width=340,height=760");
+    if (!printWindow) {
+      toast.error("Print window was blocked. Allow popups for this site and try again.");
+      return;
+    }
+
+    const nowLocal = new Date();
+    const itemLines = paymentDisplayItems.map((item) => {
+      const ladySuffix = item.department === "LD" && item.servedByName ? ` [${item.servedByName}]` : "";
+      const compliSuffix = item.isComplimentary ? " (Compli)" : "";
+      const noteSuffix = item.specialRequest ? ` - ${item.specialRequest}` : "";
+      return `
+        <div class="row">
+          <span>${item.quantity}x ${item.name}${ladySuffix}${compliSuffix}${noteSuffix}</span>
+          <span>${formatCurrency(item.subtotal)}</span>
+        </div>
+      `;
+    }).join("");
+
+    const sentOrderIds = sentTabs
+      .map((t) => t.id)
+      .filter(Boolean)
+      .join(", ");
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Bill Summary</title>
+        <style>
+          @page { size: 80mm auto; margin: 0; }
+          body {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            width: 80mm;
+            margin: 0;
+            padding: 10px;
+            box-sizing: border-box;
+          }
+          .center { text-align: center; }
+          .line { border-top: 1px dashed #000; margin: 8px 0; }
+          .row { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; }
+          .bold { font-weight: bold; }
+          .note { font-size: 11px; opacity: 0.8; }
+        </style>
+      </head>
+      <body>
+        <div class="center">
+          <div class="bold" style="font-size:16px;">${posSettings.businessName || "RABBIT ALLEY"}</div>
+          <div>${posSettings.address || "Bar & Restaurant"}</div>
+          <div class="bold">BILL SUMMARY</div>
+          <div class="note">NOT OFFICIAL RECEIPT</div>
+        </div>
+        <div class="line"></div>
+        <div class="row"><span>Date:</span><span>${nowLocal.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })}</span></div>
+        <div class="row"><span>Time:</span><span>${nowLocal.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span></div>
+        <div class="row"><span>Table:</span><span>${table.area} - ${table.name}</span></div>
+        <div class="row"><span>Cashier:</span><span>${user?.name || "Staff"}</span></div>
+        <div class="row"><span>Orders:</span><span>${sentOrderIds || "—"}</span></div>
+        <div class="line"></div>
+        <div class="bold">ITEMS</div>
+        ${itemLines || `<div class="row"><span>No items</span><span>0.00</span></div>`}
+        <div class="line"></div>
+        <div class="row"><span>Subtotal:</span><span>${formatCurrency(combinedSubtotal)}</span></div>
+        ${combinedComplimentary > 0 ? `<div class="row"><span>Less Compli:</span><span>-${formatCurrency(combinedComplimentary)}</span></div>` : ""}
+        ${appliedDiscount ? `<div class="row"><span>Discount (${appliedDiscount.name}):</span><span>-${formatCurrency(discountAmount)}</span></div>` : ""}
+        <div class="row"><span>${serviceLabel}:</span><span>${formatCurrency(discountedServiceCharge)}</span></div>
+        <div class="row"><span>${taxLabel}:</span><span>${formatCurrency(discountedTax)}</span></div>
+        ${((useSplitPayment && splitCardSurcharge > 0) || (!useSplitPayment && hasCardSurcharge && cardSurcharge > 0))
+          ? `<div class="row"><span>Card Fee:</span><span>${formatCurrency(useSplitPayment ? splitCardSurcharge : cardSurcharge)}</span></div>`
+          : ""
+        }
+        <div class="line"></div>
+        <div class="row bold" style="font-size: 14px;"><span>TOTAL DUE:</span><span>${formatCurrency(finalTotal)}</span></div>
+        <div class="line"></div>
+        <div class="center note">For bill checking before payment only.</div>
+      </body>
+      </html>
+    `;
+
+    printWindow.document.write(html);
+    printWindow.document.close();
+    const triggerPrint = () => {
+      printWindow.print();
+      printWindow.close();
+    };
+    if (printWindow.document.readyState === "complete") {
+      printWindow.focus();
+      setTimeout(triggerPrint, 120);
+    } else {
+      printWindow.onload = () => {
+        printWindow.focus();
+        setTimeout(triggerPrint, 120);
+      };
+    }
+  };
+
   const handleReprint = () => {
     const tab = orderTabs[activeTabIndex];
     if (!tab || !table) return;
@@ -1047,6 +1200,13 @@ export default function POSTableOrder() {
       time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
       table: `${table.area} - ${table.name}`,
       cashier: user?.name || "Staff",
+      businessName: posSettings.businessName,
+      businessAddress: posSettings.address,
+      businessContact: posSettings.contact,
+      receiptFooter: posSettings.receiptFooter,
+      vatTin: posSettings.vatTin,
+      serviceLabel,
+      taxLabel,
       items: tab.items.map((item) => {
         let name: string;
         if (item.isVoided) {
@@ -1218,32 +1378,36 @@ export default function POSTableOrder() {
         {/* Right: Order */}
         <div className="lg:col-span-2 bg-card border border-border rounded-xl p-4 flex flex-col h-fit lg:h-[calc(100vh-200px)] lg:sticky lg:top-4">
           {/* Compact order tabs */}
-          <div className="flex items-center gap-1.5 mb-3 shrink-0">
-            {orderTabs.map((tab, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => setActiveTabIndex(idx)}
-                className={`min-w-[36px] px-2.5 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  activeTabIndex === idx
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted/60 hover:bg-muted text-muted-foreground"
-                }`}
-                title={tab.sent ? `Order #${tab.id}` : "Draft"}
-              >
-                {tab.sent ? `#${tab.id}` : idx + 1}
-              </button>
+          <div className="space-y-1.5 mb-3 shrink-0">
+            {orderTabRows.map((row, rowIdx) => (
+              <div key={`tab-row-${rowIdx}`} className="flex items-center gap-1.5 flex-wrap">
+                {row.map(({ tab, idx }) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setActiveTabIndex(idx)}
+                    className={`min-w-[36px] px-2.5 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      activeTabIndex === idx
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted/60 hover:bg-muted text-muted-foreground"
+                    }`}
+                    title={tab.sent ? `Order #${tab.id}` : "Draft"}
+                  >
+                    {tab.sent ? `#${tab.id}` : idx + 1}
+                  </button>
+                ))}
+                {canAddToOrder && rowIdx === orderTabRows.length - 1 && (
+                  <button
+                    type="button"
+                    onClick={addNewOrderTab}
+                    className="flex items-center justify-center min-w-[36px] px-2.5 py-1.5 rounded-md text-sm border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary"
+                    title="New order"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             ))}
-            {canAddToOrder && (
-              <button
-                type="button"
-                onClick={addNewOrderTab}
-                className="flex items-center justify-center min-w-[36px] px-2.5 py-1.5 rounded-md text-sm border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-primary hover:text-primary"
-                title="New order"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            )}
           </div>
           <div className="flex items-center justify-between mb-2 shrink-0">
             <span className="text-sm font-medium">
@@ -1396,9 +1560,9 @@ export default function POSTableOrder() {
               <span>Total</span>
               <span className="text-primary">{formatCurrency(total)}</span>
             </div>
-            {hasAnySentOrder && sentTabs.length > 1 && (
+            {hasAnySentOrder && (
               <div className="flex justify-between font-medium pt-1 text-primary text-sm">
-                <span>Bill total</span>
+                <span>Running bill total</span>
                 <span>{formatCurrency(combinedTotalBeforeDiscount)}</span>
               </div>
             )}
@@ -1435,6 +1599,17 @@ export default function POSTableOrder() {
                       Process Payment
                     </>
                   )}
+                </Button>
+              )}
+              {canProcessPayment && (
+                <Button
+                  variant="outline"
+                  disabled={!hasAnySentOrder}
+                  onClick={printBillSummaryViaBrowser}
+                  title={!hasAnySentOrder ? "Send at least one order first" : "Print running bill before payment"}
+                >
+                  <Printer className="w-4 h-4 mr-2" />
+                  Running Bill
                 </Button>
               )}
               {canRequestVoid && (
@@ -1776,16 +1951,28 @@ export default function POSTableOrder() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-4">
             {/* Left: Order Summary */}
             <div className="bg-muted/30 rounded-xl p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                  <span className="text-primary font-bold text-sm">RA</span>
+              <div className="flex items-start justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <span className="text-primary font-bold text-sm">RA</span>
+                  </div>
+                  <div>
+                    <p className="font-semibold">{posSettings.businessName || "Rabbit Alley"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {sentTabs.length > 1 ? `Table bill (${sentTabs.length} orders)` : `Order #${sentTabs[0]?.id || orderNumber}`}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="font-semibold">Rabbit Alley</p>
-                  <p className="text-xs text-muted-foreground">
-                    {sentTabs.length > 1 ? `Table bill (${sentTabs.length} orders)` : `Order #${sentTabs[0]?.id || orderNumber}`}
-                  </p>
-                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={printBillSummaryViaBrowser}
+                  title="Print total bill summary before payment"
+                >
+                  <Printer className="w-3.5 h-3.5 mr-1" />
+                  Print Bill
+                </Button>
               </div>
 
               {/* Items - combined from all sent orders (voided hidden); cashier can mark as complimentary at bill-out */}
@@ -2108,7 +2295,7 @@ export default function POSTableOrder() {
                     </Button>
                     <p className={`text-xs ${Math.abs(splitRemaining) < 0.01 ? "text-green-600" : "text-amber-600"}`}>
                       {Math.abs(splitRemaining) < 0.01
-                        ? `Split total matches base amount${splitCardSurcharge > 0 ? `. Card fee: +${formatCurrency(splitCardSurcharge)}` : ""}.`
+                        ? `Split total matches bill amount${splitCardSurcharge > 0 ? `. Card fee: +${formatCurrency(splitCardSurcharge)}` : ""}.`
                         : `Remaining: ${formatCurrency(splitRemaining)} (enter amounts to match ${formatCurrency(discountedTotal)})`}
                     </p>
                     {/* When exactly one split is Charge/Utang, show one required customer name field so Pay Now can be enabled */}
@@ -2933,11 +3120,11 @@ export default function POSTableOrder() {
                 {/* Footer */}
                 <div className="text-center text-[10px] text-muted-foreground space-y-1">
                   <p>================================</p>
-                  <p className="font-semibold">Thank you for dining with us!</p>
+                  <p className="font-semibold">{posSettings.receiptFooter || "Thank you for dining with us!"}</p>
                   <p>Please come again</p>
                   <p>================================</p>
                   <p className="mt-2">This serves as your OFFICIAL RECEIPT</p>
-                  <p>VAT Reg TIN: 123-456-789-000</p>
+                  <p>VAT Reg TIN: {posSettings.vatTin || "123-456-789-000"}</p>
                 </div>
 
                 {/* Printing line animation */}

@@ -24,7 +24,8 @@ function sizeNormal() {
   return concat(GS, Buffer.from("!"), Buffer.from([0]));
 }
 function cut() {
-  return concat(GS, Buffer.from("V"), Buffer.from([65, 0]));
+  // Feed paper first so printers do not cut text near the bottom.
+  return concat(Buffer.from("\n\n\n", "ascii"), GS, Buffer.from("V"), Buffer.from([65, 0]));
 }
 function line(w, ch = "-") {
   return Buffer.from(ch.repeat(w) + "\n", "ascii");
@@ -37,10 +38,16 @@ function ln(s, w = 48) {
 }
 
 function buildCustomerReceipt(receipt, width = 48) {
-  const b = [init(), align(1), bold(true), sizeLarge(), ln("RABBIT ALLEY", width), sizeNormal(), bold(false)];
-  b.push(ln("Bar & Restaurant", width));
-  b.push(ln("123 Main Street, City", width));
-  b.push(ln("Tel: (02) 123-4567", width));
+  const businessName = String(receipt.businessName || "RABBIT ALLEY");
+  const businessAddress = String(receipt.businessAddress || "123 Main Street, City");
+  const businessContact = String(receipt.businessContact || "Tel: (02) 123-4567");
+  const receiptFooter = String(receipt.receiptFooter || "Thank you for dining with us!");
+  const vatTin = String(receipt.vatTin || "123-456-789-000");
+  const serviceLabel = String(receipt.serviceLabel || "Service (10%)");
+  const taxLabel = String(receipt.taxLabel || "VAT (12%)");
+  const b = [init(), align(1), bold(true), sizeLarge(), ln(businessName, width), sizeNormal(), bold(false)];
+  b.push(ln(businessAddress, width));
+  b.push(ln(businessContact, width));
   b.push(line(width));
   b.push(align(0));
   b.push(ln(`Order #: ${receipt.orderNumber}`, width));
@@ -55,8 +62,9 @@ function buildCustomerReceipt(receipt, width = 48) {
     const priceLine = `P${Number(item.subtotal).toFixed(2)}`;
     const pad = Math.max(1, width - itemLine.length - priceLine.length);
     b.push(ln(itemLine + " ".repeat(pad) + priceLine, width));
-    if (item.note && String(item.note).trim()) {
-      b.push(ln("   Note: " + String(item.note).trim().slice(0, width - 4), width));
+    const itemNote = item.note ?? item.specialRequest ?? item.comment;
+    if (itemNote && String(itemNote).trim()) {
+      b.push(ln("   Note: " + String(itemNote).trim().slice(0, width - 4), width));
     }
   }
   b.push(line(width));
@@ -68,8 +76,8 @@ function buildCustomerReceipt(receipt, width = 48) {
   pl("Subtotal:", `P${Number(receipt.subtotal).toFixed(2)}`);
   if (receipt.complimentary) pl("Less Compli:", `-P${Number(receipt.complimentary).toFixed(2)}`);
   if (receipt.discount) pl("Discount:", `-P${Number(receipt.discount).toFixed(2)}`);
-  pl("Service (10%):", `P${Number(receipt.serviceCharge).toFixed(2)}`);
-  pl("VAT (12%):", `P${Number(receipt.tax).toFixed(2)}`);
+  pl(`${serviceLabel}:`, `P${Number(receipt.serviceCharge).toFixed(2)}`);
+  pl(`${taxLabel}:`, `P${Number(receipt.tax).toFixed(2)}`);
   if (receipt.cardSurcharge) pl("Card Fee:", `P${Number(receipt.cardSurcharge).toFixed(2)}`);
   b.push(line(width));
   b.push(bold(true));
@@ -80,11 +88,11 @@ function buildCustomerReceipt(receipt, width = 48) {
   pl("Amount Paid:", `P${Number(receipt.amountPaid).toFixed(2)}`);
   pl("Change:", `P${Number(receipt.change).toFixed(2)}`);
   b.push(line(width));
-  b.push(align(1), ln("", width), bold(true), ln("Thank you for dining with us!", width), bold(false));
+  b.push(align(1), ln("", width), bold(true), ln(receiptFooter, width), bold(false));
   b.push(ln("Please come again", width));
   b.push(ln("", width));
   b.push(ln("This serves as your OFFICIAL RECEIPT", width));
-  b.push(ln("VAT Reg TIN: 123-456-789-000", width));
+  b.push(ln(`VAT Reg TIN: ${vatTin}`, width));
   b.push(ln("", width), cut());
   return Buffer.concat(b);
 }
@@ -138,8 +146,9 @@ function buildOrderSlip({ orderId, table: tableStr, area, waiter, date, time, su
   b.push(bold(true), ln("ITEMS", width), bold(false));
   for (const item of items || []) {
     const note = item.specialRequest ? ` (${item.specialRequest})` : "";
+    const server = item.servedByName ? ` [${item.servedByName}]` : "";
     const price = `P${Number(item.subtotal).toFixed(2)}`;
-    const label = `${item.quantity}x ${item.name}${note}`.slice(0, width);
+    const label = `${item.quantity}x ${item.name}${server}${note}`.slice(0, width);
     const pad = Math.max(1, width - label.length - price.length);
     b.push(ln(label + " ".repeat(pad) + price, width));
   }

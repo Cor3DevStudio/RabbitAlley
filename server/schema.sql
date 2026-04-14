@@ -451,6 +451,7 @@ INSERT INTO settings (setting_key, setting_value, category, description) VALUES
 ('business_name', 'Rabbit Alley', 'business', 'Business name'),
 ('business_address', '123 Main Street, Manila, Philippines', 'business', 'Business address'),
 ('business_contact', '+63 912 345 6789', 'business', 'Contact number'),
+('vat_tin', '123-456-789-000', 'business', 'VAT TIN number'),
 ('receipt_footer', 'Thank you for visiting Rabbit Alley!', 'receipt', 'Receipt footer message'),
 ('tax_rate', '12', 'tax', 'Tax rate percentage (VAT)'),
 ('service_charge_mode', 'percent', 'charges', 'Service charge mode: percent or fixed'),

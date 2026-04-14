@@ -41,7 +41,9 @@ interface OrderRow {
   employee: string;
   subtotal: number;
   discount: number;
+  complimentary: number;
   tax: number;
+  cardSurcharge: number;
   total: number;
   status: string;
   time: string;
@@ -314,7 +316,14 @@ export default function Reports() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [salesList, setSalesList] = useState<OrderRow[]>([]);
-  const [salesSummary, setSalesSummary] = useState({ totalOrders: 0, totalSales: 0, totalDiscounts: 0, totalTax: 0 });
+  const [salesSummary, setSalesSummary] = useState({
+    totalOrders: 0,
+    totalSales: 0,
+    totalDiscounts: 0,
+    totalComplimentary: 0,
+    totalTax: 0,
+    totalCardSurcharge: 0,
+  });
   const [payroll, setPayroll] = useState<PayrollRow[]>([]);
   const [payrollSummary, setPayrollSummary] = useState({ totalEmployees: 0, totalPayout: 0, totalIncentives: 0, totalDeductions: 0, totalLd: 0 });
   const [loadingSales, setLoadingSales] = useState(false);
@@ -325,7 +334,6 @@ export default function Reports() {
   const [computeStep, setComputeStep] = useState("");
   const [orderDetail, setOrderDetail] = useState<Awaited<ReturnType<typeof api.orders.detail>> | null>(null);
   const [orderDetailLoading, setOrderDetailLoading] = useState(false);
-  const [salesViewMode, setSalesViewMode] = useState<"order" | "table">("table");
   const [dayStartHour, setDayStartHour] = useState<number | "">("");
 
   const loadSalesStable = useCallback(async () => {
@@ -444,8 +452,8 @@ export default function Reports() {
     try {
       if (activeTab === "sales") {
         if (format === "CSV") {
-          const headers = ["Order No", "Area", "Table", "Employee", "Subtotal", "Discount", "Tax", "Total", "Status", "Time"];
-          const rows = salesList.map((o) => [o.id, o.area, o.table, o.employee, o.subtotal, o.discount, o.tax, o.total, o.status, o.time]);
+          const headers = ["Transaction No", "Area", "Table", "Employee", "Subtotal", "Discount", "Complimentary", "Tax", "Card Surcharge", "Total", "Status", "Time"];
+          const rows = salesList.map((o) => [o.id, o.area, o.table, o.employee, o.subtotal, o.discount, o.complimentary, o.tax, o.cardSurcharge, o.total, o.status, o.time]);
           const csv = [headers.join(","), ...rows.map((r) => r.map((c) => (typeof c === "string" && c.includes(",") ? `"${c}"` : c)).join(","))].join("\n");
           const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
           downloadBlob(blob, `sales_report_${fromTo}.csv`);
@@ -458,7 +466,9 @@ export default function Reports() {
               Employee: o.employee,
               Subtotal: o.subtotal,
               Discount: o.discount,
+              Complimentary: o.complimentary,
               Tax: o.tax,
+              "Card Surcharge": o.cardSurcharge,
               Total: o.total,
               Status: o.status,
               Time: o.time,
@@ -475,8 +485,8 @@ export default function Reports() {
           doc.text(`Total Orders: ${salesSummary.totalOrders}  |  Total Sales: ₱${salesSummary.totalSales.toFixed(2)}  |  Total Discount: ₱${salesSummary.totalDiscounts.toFixed(2)}  |  Tax: ₱${salesSummary.totalTax.toFixed(2)}`, 14, 20);
           autoTable(doc, {
             startY: 24,
-            head: [["Order No", "Area", "Table", "Employee", "Subtotal", "Discount", "Tax", "Total", "Status", "Time"]],
-            body: salesList.map((o) => [o.id, o.area, o.table, o.employee, o.subtotal.toFixed(2), o.discount.toFixed(2), o.tax.toFixed(2), o.total.toFixed(2), o.status, o.time]),
+            head: [["Transaction No", "Area", "Table", "Employee", "Subtotal", "Discount", "Complimentary", "Tax", "Card Surcharge", "Total", "Status", "Time"]],
+            body: salesList.map((o) => [o.id, o.area, o.table, o.employee, o.subtotal.toFixed(2), o.discount.toFixed(2), o.complimentary.toFixed(2), o.tax.toFixed(2), o.cardSurcharge.toFixed(2), o.total.toFixed(2), o.status, o.time]),
           });
           const summaryY = ((doc as unknown) as { lastAutoTable?: { finalY: number } }).lastAutoTable
             ? ((doc as unknown) as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10
@@ -485,6 +495,8 @@ export default function Reports() {
           doc.setFontSize(11);
           doc.text(`TOTAL: ₱${salesSummary.totalSales.toFixed(2)}`, 14, summaryY);
           doc.text(`TOTAL DISCOUNT: ₱${salesSummary.totalDiscounts.toFixed(2)}`, 14, summaryY + 7);
+          doc.text(`TOTAL COMPLIMENTARY: ₱${salesSummary.totalComplimentary.toFixed(2)}`, 14, summaryY + 14);
+          doc.text(`TOTAL CARD SURCHARGE: ₱${salesSummary.totalCardSurcharge.toFixed(2)}`, 14, summaryY + 21);
           doc.setFont("helvetica", "normal");
           doc.save(`sales_report_${fromTo}.pdf`);
         }
@@ -935,24 +947,6 @@ export default function Reports() {
         >
           Payroll Report
         </Button>
-        {activeTab === "sales" && (
-          <div className="flex gap-1 ml-2 border rounded-lg p-0.5 bg-muted/30">
-            <button
-              type="button"
-              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${salesViewMode === "order" ? "bg-background shadow font-medium" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setSalesViewMode("order")}
-            >
-              Per order
-            </button>
-            <button
-              type="button"
-              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${salesViewMode === "table" ? "bg-background shadow font-medium" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setSalesViewMode("table")}
-            >
-              Per table
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="flex flex-wrap gap-3 mb-6">
@@ -1003,9 +997,9 @@ export default function Reports() {
 
       {activeTab === "sales" && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             <StatCard
-              label="Total Orders"
+              label="Transactions"
               value={salesSummary.totalOrders}
               icon={<ShoppingBag className="w-5 h-5" />}
             />
@@ -1020,9 +1014,14 @@ export default function Reports() {
               icon={<Percent className="w-5 h-5" />}
             />
             <StatCard
-              label="Tax Collected"
+              label="Tax"
               value={formatCurrency(salesSummary.totalTax)}
               icon={<Receipt className="w-5 h-5" />}
+            />
+            <StatCard
+              label="Card Surcharge"
+              value={formatCurrency(salesSummary.totalCardSurcharge)}
+              icon={<CreditCard className="w-5 h-5" />}
             />
           </div>
 
@@ -1030,64 +1029,27 @@ export default function Reports() {
             <Table>
               <TableHeader className="sticky top-0 bg-muted/95 z-10">
                 <TableRow>
-                  {salesViewMode === "order" ? (
-                    <>
-                      <TableHead>Order No</TableHead>
-                      <TableHead>Area</TableHead>
-                      <TableHead>Table</TableHead>
-                      <TableHead>Employee</TableHead>
-                      <TableHead className="text-right">Subtotal</TableHead>
-                      <TableHead className="text-right">Discount</TableHead>
-                      <TableHead className="text-right">Tax</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Time</TableHead>
-                    </>
-                  ) : (
-                    <>
-                      <TableHead>Area</TableHead>
-                      <TableHead>Table</TableHead>
-                      <TableHead className="text-right">Orders</TableHead>
-                      <TableHead className="text-right">Subtotal</TableHead>
-                      <TableHead className="text-right">Discount</TableHead>
-                      <TableHead className="text-right">Tax</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                    </>
-                  )}
+                  <TableHead>Transaction</TableHead>
+                  <TableHead>Area</TableHead>
+                  <TableHead>Table</TableHead>
+                  <TableHead>Employee</TableHead>
+                  <TableHead className="text-right">Subtotal</TableHead>
+                  <TableHead className="text-right">Discount</TableHead>
+                  <TableHead className="text-right">Compli</TableHead>
+                  <TableHead className="text-right">Tax</TableHead>
+                  <TableHead className="text-right">Card Surcharge</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Time</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loadingSales ? (
                   <TableRow>
-                    <TableCell colSpan={salesViewMode === "order" ? 10 : 7} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
                       Loading…
                     </TableCell>
                   </TableRow>
-                ) : salesViewMode === "table" ? (
-                  (() => {
-                    const byTable = new Map<string, { area: string; table: string; orders: number; subtotal: number; discount: number; tax: number; total: number }>();
-                    for (const o of salesList) {
-                      const key = `${o.area}\t${o.table}`;
-                      const prev = byTable.get(key) || { area: o.area, table: o.table, orders: 0, subtotal: 0, discount: 0, tax: 0, total: 0 };
-                      prev.orders += 1;
-                      prev.subtotal += o.subtotal;
-                      prev.discount += o.discount;
-                      prev.tax += o.tax;
-                      prev.total += o.total;
-                      byTable.set(key, prev);
-                    }
-                    return Array.from(byTable.values()).map((row) => (
-                      <TableRow key={`${row.area}-${row.table}`}>
-                        <TableCell>{row.area}</TableCell>
-                        <TableCell>{row.table}</TableCell>
-                        <TableCell className="text-right">{row.orders}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(row.subtotal)}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">{formatCurrency(row.discount)}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">{formatCurrency(row.tax)}</TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(row.total)}</TableCell>
-                      </TableRow>
-                    ));
-                  })()
                 ) : (
                   salesList.map((order) => (
                     <TableRow
@@ -1101,7 +1063,9 @@ export default function Reports() {
                       <TableCell className="text-muted-foreground">{order.employee}</TableCell>
                       <TableCell className="text-right">{formatCurrency(order.subtotal)}</TableCell>
                       <TableCell className="text-right text-muted-foreground">{formatCurrency(order.discount)}</TableCell>
+                      <TableCell className="text-right text-purple-600">{formatCurrency(order.complimentary)}</TableCell>
                       <TableCell className="text-right text-muted-foreground">{formatCurrency(order.tax)}</TableCell>
+                      <TableCell className="text-right text-amber-600">{formatCurrency(order.cardSurcharge)}</TableCell>
                       <TableCell className="text-right font-medium">{formatCurrency(order.total)}</TableCell>
                       <TableCell>
                         <Badge className={cn(
@@ -1115,6 +1079,18 @@ export default function Reports() {
                       <TableCell className="text-muted-foreground">{order.time}</TableCell>
                     </TableRow>
                   ))
+                )}
+                {!loadingSales && salesList.length > 0 && (
+                  <TableRow className="bg-muted/40 font-semibold">
+                    <TableCell colSpan={4}>TOTAL</TableCell>
+                    <TableCell className="text-right">{formatCurrency(salesList.reduce((s, o) => s + o.subtotal, 0))}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(salesSummary.totalDiscounts)}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(salesSummary.totalComplimentary)}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(salesSummary.totalTax)}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(salesSummary.totalCardSurcharge)}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(salesSummary.totalSales)}</TableCell>
+                    <TableCell colSpan={2} />
+                  </TableRow>
                 )}
               </TableBody>
             </Table>

@@ -990,6 +990,7 @@ app.post("/api/tables/:tableId/pay-all", async (req, res) => {
   const { paymentMethod, discountName, discountAmount, customerName, splits } = req.body || {};
   try {
     const db = await getPool();
+    const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     const [pending] = await db.execute(
       "SELECT id, subtotal, discount, tax, total FROM orders WHERE table_id = ? AND status = 'pending' AND branch_id = ? ORDER BY id",
       [tableId, branchId]
@@ -1004,18 +1005,96 @@ app.post("/api/tables/:tableId/pay-all", async (req, res) => {
       const name = String(customerName || "").trim();
       if (!name) return res.status(400).json({ error: "Customer name is required for Charge/Utang" });
     }
-    const { userId, employeeId, userName } = getActingUser(req);
-    for (const o of pending) {
-      await db.execute("UPDATE orders SET status = 'paid', payment_method = ? WHERE id = ?", [paymentMethodVal, o.id]);
+    const [settingsRows] = await db.execute(
+      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('tax_rate','service_charge_mode','service_charge_value','card_surcharge')"
+    );
+    const settingsMap = {};
+    for (const row of settingsRows || []) settingsMap[row.setting_key] = row.setting_value;
+    const taxRate = Math.max(0, Number(settingsMap.tax_rate ?? 0) || 0) / 100;
+    const serviceChargeMode = String(settingsMap.service_charge_mode || "percent") === "fixed" ? "fixed" : "percent";
+    const serviceChargeValue = Math.max(0, Number(settingsMap.service_charge_value ?? 0) || 0);
+    const cardSurchargeRate = Math.max(0, Number(settingsMap.card_surcharge ?? 0) || 0) / 100;
+    const computeServiceCharge = (baseAmount) => round2(baseAmount * (serviceChargeValue / 100));
+    const pendingIds = pending.map((o) => o.id);
+    let complimentaryByOrder = {};
+    if (pendingIds.length > 0) {
+      const placeholders = pendingIds.map(() => "?").join(",");
+      const compRows = await queryWithVoidFallback(
+        db,
+        `SELECT oi.order_id AS orderId,
+                COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
+         FROM order_items oi
+         WHERE oi.order_id IN (${placeholders}) AND COALESCE(oi.is_voided,0) = 0
+         GROUP BY oi.order_id`,
+        `SELECT oi.order_id AS orderId,
+                COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
+         FROM order_items oi
+         WHERE oi.order_id IN (${placeholders})
+         GROUP BY oi.order_id`,
+        pendingIds
+      );
+      complimentaryByOrder = (compRows || []).reduce((acc, r) => {
+        acc[String(r.orderId)] = Number(r.complimentary || 0);
+        return acc;
+      }, {});
     }
+    const chargeableByOrder = pending.map((o) => {
+      const chargeable = Math.max(0, Number(o.subtotal) - Number(complimentaryByOrder[String(o.id)] || 0));
+      return { id: o.id, chargeable };
+    });
+    const totalChargeable = chargeableByOrder.reduce((s, o) => s + o.chargeable, 0);
+    const requestedDiscount = Math.min(Math.max(0, Number(discountAmount) || 0), totalChargeable);
+    const discountedChargeableTotal = Math.max(0, totalChargeable - requestedDiscount);
+    let discountRemaining = round2(requestedDiscount);
+    let computedCardSurcharge = 0;
+    const paidSum = isSplitPayment ? (splits || []).reduce((s, sp) => s + (Number(sp.amount) || 0), 0) : 0;
+    const cardSplitSum = isSplitPayment
+      ? (splits || []).reduce((s, sp) => {
+          const m = String(sp.paymentMethod || "").toLowerCase();
+          return m === "credit" || m === "debit" ? s + (Number(sp.amount) || 0) : s;
+        }, 0)
+      : 0;
+    const cardSplitRatio = paidSum > 0 ? Math.min(1, Math.max(0, cardSplitSum / paidSum)) : 0;
+    for (let i = 0; i < pending.length; i++) {
+      const o = pending[i];
+      const chargeable = chargeableByOrder[i].chargeable;
+      const proportionalDiscount = requestedDiscount > 0 && totalChargeable > 0
+        ? round2((chargeable / totalChargeable) * requestedDiscount)
+        : 0;
+      const orderDiscount = i === pending.length - 1 ? Math.min(discountRemaining, chargeable) : Math.min(proportionalDiscount, chargeable);
+      discountRemaining = round2(discountRemaining - orderDiscount);
+      const taxableBase = Math.max(0, chargeable - orderDiscount);
+      const orderService = serviceChargeMode === "fixed"
+        ? (discountedChargeableTotal > 0 ? round2(serviceChargeValue * (taxableBase / discountedChargeableTotal)) : 0)
+        : computeServiceCharge(taxableBase);
+      const orderTax = round2(taxableBase * taxRate);
+      const baseTotal = round2(taxableBase + orderService + orderTax);
+      let orderCardSurcharge = 0;
+      if (!isSplitPayment && (paymentMethodVal === "credit" || paymentMethodVal === "debit")) {
+        orderCardSurcharge = round2(baseTotal * cardSurchargeRate);
+      } else if (isSplitPayment && cardSplitRatio > 0) {
+        orderCardSurcharge = round2(baseTotal * cardSurchargeRate * cardSplitRatio);
+      }
+      computedCardSurcharge += orderCardSurcharge;
+      const orderTotal = round2(baseTotal + orderCardSurcharge);
+      await db.execute(
+        "UPDATE orders SET status = 'paid', payment_method = ?, discount = ?, tax = ?, total = ? WHERE id = ?",
+        [paymentMethodVal, orderDiscount, orderTax, orderTotal, o.id]
+      );
+    }
+    const { userId, employeeId, userName } = getActingUser(req);
     await db.execute(
       "UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?",
       [branchId, tableId]
     );
-    const combinedSubtotal = pending.reduce((s, o) => s + Number(o.subtotal), 0);
-    const combinedDiscount = pending.reduce((s, o) => s + Number(o.discount), 0);
-    const combinedTax = pending.reduce((s, o) => s + Number(o.tax), 0);
-    const combinedTotal = pending.reduce((s, o) => s + Number(o.total), 0);
+    const [paidRows] = await db.execute(
+      "SELECT subtotal, discount, tax, total FROM orders WHERE id IN (" + pendingIds.map(() => "?").join(",") + ")",
+      pendingIds
+    );
+    const combinedSubtotal = (paidRows || []).reduce((s, o) => s + Number(o.subtotal), 0);
+    const combinedDiscount = (paidRows || []).reduce((s, o) => s + Number(o.discount), 0);
+    const combinedTax = (paidRows || []).reduce((s, o) => s + Number(o.tax), 0);
+    const combinedTotal = (paidRows || []).reduce((s, o) => s + Number(o.total), 0);
 
     // Handle split payment records
     if (isSplitPayment) {
@@ -1067,6 +1146,7 @@ app.post("/api/tables/:tableId/pay-all", async (req, res) => {
       discount: combinedDiscount,
       tax: combinedTax,
       total: combinedTotal,
+      cardSurcharge: round2(computedCardSurcharge),
     });
   } catch (err) {
     if (err.code === "ER_NO_SUCH_TABLE" && err.message?.includes("charge_transactions")) {
@@ -1180,15 +1260,21 @@ app.post("/api/print/receipt", async (req, res) => {
     }
 
     // Build receipt
+    const businessName = String(receipt.businessName || "RABBIT ALLEY");
+    const businessAddress = String(receipt.businessAddress || "123 Main Street, City");
+    const businessContact = String(receipt.businessContact || "Tel: (02) 123-4567");
+    const receiptFooter = String(receipt.receiptFooter || "Thank you for dining with us!");
+    const vatTin = String(receipt.vatTin || "123-456-789-000");
+    const serviceLabel = String(receipt.serviceLabel || "Service (10%)");
+    const taxLabel = String(receipt.taxLabel || "VAT (12%)");
     printer.alignCenter();
     printer.bold(true);
     printer.setTextSize(1, 1);
-    printer.println("RABBIT ALLEY");
+    printer.println(businessName);
     printer.bold(false);
     printer.setTextNormal();
-    printer.println("Bar & Restaurant");
-    printer.println("123 Main Street, City");
-    printer.println("Tel: (02) 123-4567");
+    printer.println(businessAddress);
+    printer.println(businessContact);
     printer.drawLine();
 
     // Order info
@@ -1209,8 +1295,9 @@ app.post("/api/print/receipt", async (req, res) => {
       const priceLine = `P${Number(item.subtotal).toFixed(2)}`;
       const padding = 48 - itemLine.length - priceLine.length;
       printer.println(itemLine + " ".repeat(Math.max(1, padding)) + priceLine);
-      if (item.note && String(item.note).trim()) {
-        printer.println("   Note: " + String(item.note).trim().slice(0, 40));
+      const itemNote = item.note ?? item.specialRequest ?? item.comment;
+      if (itemNote && String(itemNote).trim()) {
+        printer.println("   Note: " + String(itemNote).trim().slice(0, 40));
       }
     }
     printer.drawLine();
@@ -1228,8 +1315,8 @@ app.post("/api/print/receipt", async (req, res) => {
     if (receipt.discount) {
       printLine("Discount:", `-P${Number(receipt.discount).toFixed(2)}`);
     }
-    printLine("Service (10%):", `P${Number(receipt.serviceCharge).toFixed(2)}`);
-    printLine("VAT (12%):", `P${Number(receipt.tax).toFixed(2)}`);
+    printLine(`${serviceLabel}:`, `P${Number(receipt.serviceCharge).toFixed(2)}`);
+    printLine(`${taxLabel}:`, `P${Number(receipt.tax).toFixed(2)}`);
     if (receipt.cardSurcharge) {
       printLine("Card Fee (4%):", `P${Number(receipt.cardSurcharge).toFixed(2)}`);
     }
@@ -1249,14 +1336,18 @@ app.post("/api/print/receipt", async (req, res) => {
     printer.alignCenter();
     printer.println("");
     printer.bold(true);
-    printer.println("Thank you for dining with us!");
+    printer.println(receiptFooter);
     printer.bold(false);
     printer.println("Please come again");
     printer.println("");
     printer.println("This serves as your OFFICIAL RECEIPT");
-    printer.println("VAT Reg TIN: 123-456-789-000");
+    printer.println(`VAT Reg TIN: ${vatTin}`);
     printer.println("");
 
+    // Feed a few blank lines before cutting so thermal printers don't cut content.
+    printer.println("");
+    printer.println("");
+    printer.println("");
     // Cut paper
     printer.cut();
 
@@ -1357,6 +1448,8 @@ app.post("/api/print/dept-receipt", async (req, res) => {
 
     printer.drawLine();
     printer.println(`Encoder: ${encoder || ""}`);
+    printer.println("");
+    printer.println("");
     printer.cut();
     await printer.execute();
     console.log(`[Print] Dept chit (${dept}) printed to ${interfaceToUse}`);
@@ -1411,8 +1504,9 @@ app.post("/api/print/order-slip", async (req, res) => {
     printer.bold(false);
     for (const item of items) {
       const note = item.specialRequest ? ` (${item.specialRequest})` : "";
+      const server = item.servedByName ? ` [${item.servedByName}]` : "";
       const price = `P${Number(item.subtotal).toFixed(2)}`;
-      const label = `${item.quantity}x ${item.name}${note}`;
+      const label = `${item.quantity}x ${item.name}${server}${note}`;
       const pad = Math.max(1, 42 - label.length - price.length);
       printer.println(label + " ".repeat(pad) + price);
     }
@@ -1426,6 +1520,8 @@ app.post("/api/print/order-slip", async (req, res) => {
     printer.println("Not official receipt.");
     printer.println("Subject to tax & service charge.");
     printer.println("Signature: ____________________");
+    printer.println("");
+    printer.println("");
     printer.cut();
     await printer.execute();
     res.json({ ok: true });
@@ -2192,7 +2288,15 @@ app.get("/api/reports/sales", async (req, res) => {
   const startHour = dayStartHour != null ? Math.min(23, Math.max(0, parseInt(String(dayStartHour), 10) || 0)) : null;
   try {
     const db = await getPool();
-    let sql = `SELECT o.id, o.table_id AS tableId, t.area, t.name AS tableName, o.status, o.subtotal, o.discount, o.tax, o.total, 
+    const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+    const [settingsRows] = await db.execute(
+      "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('tax_rate','card_surcharge')"
+    );
+    const settingsMap = {};
+    for (const row of settingsRows || []) settingsMap[row.setting_key] = row.setting_value;
+    const taxRatePct = Math.max(0, Number(settingsMap.tax_rate ?? 0) || 0);
+    const cardSurchargeRate = Math.max(0, Number(settingsMap.card_surcharge ?? 0) || 0) / 100;
+    let sql = `SELECT o.id, o.table_id AS tableId, t.area, t.name AS tableName, o.status, o.subtotal, o.discount, o.tax, o.total, o.payment_method AS paymentMethod,
               o.employee_id AS employeeId, u.name AS employeeName, u.nickname AS employeeNickname,
               o.order_date AS orderDate, o.created_at AS time
        FROM orders o 
@@ -2210,24 +2314,74 @@ app.get("/api/reports/sales", async (req, res) => {
     }
     sql += ` ORDER BY o.created_at DESC`;
     const [rows] = await db.execute(sql, params);
-    const list = rows.map((r) => ({
-      id: "ORD-" + r.id,
-      tableId: r.tableId,
-      area: r.area || "—",
-      table: r.tableName != null ? r.tableName : (r.tableId ? `Table ${r.tableId} (removed)` : "—"),
-      employee: r.employeeNickname || r.employeeName || r.employeeId || "—",
-      subtotal: Number(r.subtotal),
-      discount: Number(r.discount),
-      tax: Number(r.tax),
-      total: Number(r.total),
-      status: r.status,
-      time: r.time ? new Date(r.time).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }) : "—",
-    }));
+    const orderIds = rows.map((r) => r.id);
+    const complimentaryMap = {};
+    if (orderIds.length > 0) {
+      const placeholders = orderIds.map(() => "?").join(",");
+      const compRows = await queryWithVoidFallback(
+        db,
+        `SELECT oi.order_id AS orderId,
+                COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
+         FROM order_items oi
+         WHERE oi.order_id IN (${placeholders}) AND COALESCE(oi.is_voided,0) = 0
+         GROUP BY oi.order_id`,
+        `SELECT oi.order_id AS orderId,
+                COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
+         FROM order_items oi
+         WHERE oi.order_id IN (${placeholders})
+         GROUP BY oi.order_id`,
+        orderIds
+      );
+      for (const c of compRows || []) complimentaryMap[String(c.orderId)] = Number(c.complimentary || 0);
+    }
+    const splitCardMap = {};
+    if (orderIds.length > 0) {
+      try {
+        const placeholders = orderIds.map(() => "?").join(",");
+        const [splitRows] = await db.execute(
+          `SELECT order_id AS orderId, COALESCE(SUM(amount),0) AS cardAmount
+           FROM split_payments
+           WHERE order_id IN (${placeholders}) AND status = 'paid' AND payment_method IN ('credit','debit')
+           GROUP BY order_id`,
+          orderIds
+        );
+        for (const sr of splitRows || []) splitCardMap[String(sr.orderId)] = Number(sr.cardAmount || 0);
+      } catch {
+        // split_payments table may not exist on older DB
+      }
+    }
+    const list = rows.map((r) => {
+      const rawTax = Number(r.tax || 0);
+      const displayTax = taxRatePct <= 0 ? 0 : rawTax;
+      const splitCardAmount = Number(splitCardMap[String(r.id)] || 0);
+      const method = String(r.paymentMethod || "").toLowerCase();
+      const estimatedCardSurcharge = splitCardAmount > 0
+        ? round2(splitCardAmount * cardSurchargeRate)
+        : (method === "credit" || method === "debit" ? round2(Number(r.total || 0) * cardSurchargeRate) : 0);
+      const adjustedTotal = round2(Number(r.total || 0) - rawTax + displayTax + estimatedCardSurcharge);
+      return {
+        id: "ORD-" + r.id,
+        tableId: r.tableId,
+        area: r.area || "—",
+        table: r.tableName != null ? r.tableName : (r.tableId ? `Table ${r.tableId} (removed)` : "—"),
+        employee: r.employeeNickname || r.employeeName || r.employeeId || "—",
+        subtotal: Number(r.subtotal),
+        discount: Number(r.discount),
+        complimentary: Number(complimentaryMap[String(r.id)] || 0),
+        tax: displayTax,
+        cardSurcharge: estimatedCardSurcharge,
+        total: adjustedTotal,
+        status: r.status,
+        time: r.time ? new Date(r.time).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }) : "—",
+      };
+    });
     const totalOrders = list.length;
     const totalSales = list.reduce((s, o) => s + o.total, 0);
     const totalDiscounts = list.reduce((s, o) => s + o.discount, 0);
+    const totalComplimentary = list.reduce((s, o) => s + o.complimentary, 0);
     const totalTax = list.reduce((s, o) => s + o.tax, 0);
-    res.json({ list, summary: { totalOrders, totalSales, totalDiscounts, totalTax } });
+    const totalCardSurcharge = list.reduce((s, o) => s + o.cardSurcharge, 0);
+    res.json({ list, summary: { totalOrders, totalSales, totalDiscounts, totalComplimentary, totalTax, totalCardSurcharge } });
   } catch (err) {
     console.error("Sales report error:", err);
     res.status(500).json({ error: "Failed to load sales report" });

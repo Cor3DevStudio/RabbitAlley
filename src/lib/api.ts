@@ -257,7 +257,30 @@ export const api = {
       if (from) q.set("from", from);
       if (to) q.set("to", to || from || new Date().toISOString().slice(0, 10));
       if (dayStartHour != null && dayStartHour >= 0 && dayStartHour <= 23) q.set("dayStartHour", String(dayStartHour));
-      return fetchApi<{ list: Array<{ id: string; area: string; table: string; employee: string; subtotal: number; discount: number; tax: number; total: number; status: string; time: string }>; summary: { totalOrders: number; totalSales: number; totalDiscounts: number; totalTax: number } }>("/api/reports/sales?" + q.toString());
+      return fetchApi<{
+        list: Array<{
+          id: string;
+          area: string;
+          table: string;
+          employee: string;
+          subtotal: number;
+          discount: number;
+          complimentary: number;
+          tax: number;
+          cardSurcharge: number;
+          total: number;
+          status: string;
+          time: string;
+        }>;
+        summary: {
+          totalOrders: number;
+          totalSales: number;
+          totalDiscounts: number;
+          totalComplimentary: number;
+          totalTax: number;
+          totalCardSurcharge: number;
+        };
+      }>("/api/reports/sales?" + q.toString());
     },
     payroll: (from?: string, to?: string) => {
       const q = new URLSearchParams();
@@ -306,6 +329,13 @@ export const api = {
         time: string;
         table: string;
         cashier: string;
+        businessName?: string;
+        businessAddress?: string;
+        businessContact?: string;
+        receiptFooter?: string;
+        vatTin?: string;
+        serviceLabel?: string;
+        taxLabel?: string;
         items: Array<{ name: string; quantity: number; subtotal: number; isComplimentary?: boolean }>;
         subtotal: number;
         complimentary?: number;
@@ -349,7 +379,7 @@ export const api = {
       date: string;
       time: string;
       subtotal: number;
-      items: Array<{ name: string; quantity: number; subtotal: number; specialRequest?: string | null }>;
+      items: Array<{ name: string; quantity: number; subtotal: number; servedByName?: string | null; specialRequest?: string | null }>;
       printerName?: string | null;
     }) =>
       fetchApi<{ ok: boolean; error?: string }>("/api/print/order-slip", {
