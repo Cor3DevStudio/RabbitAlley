@@ -405,6 +405,16 @@ export default function POSTableOrder() {
     [table, user?.name]
   );
 
+  const orderTabRows = useMemo(() => {
+    const rows: Array<Array<{ tab: OrderTab; idx: number }>> = [];
+    orderTabs.forEach((tab, idx) => {
+      const rowIndex = Math.floor(idx / 10);
+      if (!rows[rowIndex]) rows[rowIndex] = [];
+      rows[rowIndex].push({ tab, idx });
+    });
+    return rows;
+  }, [orderTabs]);
+
   if (tablesLoading) {
     return (
       <AppLayout>
@@ -432,15 +442,6 @@ export default function POSTableOrder() {
   const orderItems = activeTab?.items ?? [];
   const orderSent = activeTab?.sent ?? false;
   const hasAnySentOrder = orderTabs.some((t) => t.sent);
-  const orderTabRows = useMemo(() => {
-    const rows: Array<Array<{ tab: OrderTab; idx: number }>> = [];
-    orderTabs.forEach((tab, idx) => {
-      const rowIndex = Math.floor(idx / 10);
-      if (!rows[rowIndex]) rows[rowIndex] = [];
-      rows[rowIndex].push({ tab, idx });
-    });
-    return rows;
-  }, [orderTabs]);
   const canAddItems = canAddToOrder && activeTab && !activeTab.sent;
   const requiresLdLadySelection = selectedCategory === "Ladies Drink" && !selectedLdLadyForCategory;
 
