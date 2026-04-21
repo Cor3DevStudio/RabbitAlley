@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS orders (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   branch_id INT UNSIGNED NOT NULL DEFAULT 1,
   table_id VARCHAR(16) DEFAULT NULL,
+  table_visit_id INT UNSIGNED DEFAULT NULL,
   status ENUM('pending','paid') NOT NULL DEFAULT 'pending',
   payment_method VARCHAR(32) DEFAULT NULL,  -- cash, gcash, debit, credit, bank
   subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -145,6 +146,7 @@ CREATE TABLE IF NOT EXISTS orders (
   KEY idx_orders_date (order_date),
   KEY idx_orders_status (status),
   KEY idx_orders_table (table_id),
+  KEY idx_orders_table_visit (branch_id, table_id, table_visit_id),
   KEY idx_orders_employee (employee_id),
   KEY idx_orders_date_status (order_date, status),
   KEY idx_orders_payment_method (payment_method),
@@ -499,6 +501,7 @@ CREATE TABLE IF NOT EXISTS product_area_prices (
 -- MIGRATION: Order void + per-item void + special_request (run once if upgrading)
 -- ============================================================================
 -- Orders: ALTER TABLE orders ADD COLUMN voided_at TIMESTAMP NULL DEFAULT NULL AFTER order_date, ADD COLUMN voided_by INT UNSIGNED DEFAULT NULL, ADD COLUMN voided_by_name VARCHAR(128) DEFAULT NULL;
+-- Table visit (sales report grouping): ALTER TABLE orders ADD COLUMN table_visit_id INT UNSIGNED DEFAULT NULL AFTER table_id, ADD KEY idx_orders_table_visit (branch_id, table_id, table_visit_id);
 -- Order items: ALTER TABLE order_items ADD COLUMN special_request VARCHAR(512) DEFAULT NULL AFTER served_by, ADD COLUMN is_voided TINYINT(1) NOT NULL DEFAULT 0, ADD COLUMN voided_by INT UNSIGNED DEFAULT NULL, ADD COLUMN voided_at TIMESTAMP NULL DEFAULT NULL, ADD COLUMN voided_by_name VARCHAR(128) DEFAULT NULL;
 
 -- ============================================================================

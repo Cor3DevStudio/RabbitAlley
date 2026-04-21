@@ -131,6 +131,75 @@ async function queryWithVoidFallback(db, sqlWithVoid, sqlWithout, params) {
   }
 }
 
+/** Set table_visit_id to MIN(pending id) for all pending rows on a table (keeps one “visit” anchor). */
+async function reconcileTableVisitIds(db, branchId, tableId) {
+  if (!tableId) return;
+  try {
+    const [r] = await db.execute(
+      `SELECT MIN(id) AS anchor FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending'`,
+      [branchId, tableId]
+    );
+    const anchor = r[0]?.anchor != null ? Number(r[0].anchor) : null;
+    if (anchor == null) return;
+    await db.execute(
+      `UPDATE orders SET table_visit_id = ? WHERE branch_id = ? AND table_id = ? AND status = 'pending'`,
+      [anchor, branchId, tableId]
+    );
+  } catch (e) {
+    if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+  }
+}
+
+/** 4h gap on same table ⇒ new “visit” when table_visit_id was never stored (legacy rows). */
+const LEGACY_SALES_VISIT_GAP_MS = 4 * 60 * 60 * 1000;
+
+function assignSalesVisitGroupMeta(rows, legacyGapMs = LEGACY_SALES_VISIT_GAP_MS) {
+  const needsLegacy = rows.filter((r) => r.tableId && (r.tableVisitId == null || r.tableVisitId === ""));
+  const byTable = new Map();
+  for (const r of needsLegacy) {
+    const tk = String(r.tableId);
+    if (!byTable.has(tk)) byTable.set(tk, []);
+    byTable.get(tk).push(r);
+  }
+  for (const arr of byTable.values()) {
+    arr.sort((a, b) => {
+      const ta = new Date(a.time).getTime();
+      const tb = new Date(b.time).getTime();
+      if (ta !== tb) return ta - tb;
+      return Number(a.id) - Number(b.id);
+    });
+    let anchor = Number(arr[0].id);
+    arr[0]._legacyVisitAnchor = anchor;
+    for (let i = 1; i < arr.length; i++) {
+      const prevT = new Date(arr[i - 1].time).getTime();
+      const curT = new Date(arr[i].time).getTime();
+      if (curT - prevT > legacyGapMs) {
+        anchor = Number(arr[i].id);
+      }
+      arr[i]._legacyVisitAnchor = anchor;
+    }
+  }
+  for (const r of rows) {
+    const tid = r.tableId != null && String(r.tableId).trim() !== "" ? String(r.tableId) : "";
+    const tvRaw = r.tableVisitId;
+    const tv = tvRaw != null && tvRaw !== "" ? Number(tvRaw) : NaN;
+    if (!tid) {
+      r._visitGroupKey = `solo-${r.id}`;
+      r._visitAnchor = Number(r.id);
+    } else if (Number.isFinite(tv) && tv > 0) {
+      r._visitGroupKey = `visit-${tid}-${tv}`;
+      r._visitAnchor = tv;
+    } else if (r._legacyVisitAnchor != null) {
+      const a = Number(r._legacyVisitAnchor);
+      r._visitGroupKey = `legacy-${tid}-${a}`;
+      r._visitAnchor = a;
+    } else {
+      r._visitGroupKey = `solo-${r.id}`;
+      r._visitAnchor = Number(r.id);
+    }
+  }
+}
+
 function row(r) {
   return r && typeof r === "object" ? Object.fromEntries(
     Object.entries(r).map(([k, v]) => [k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), v])
@@ -567,7 +636,18 @@ app.post("/api/orders", async (req, res) => {
       [branchId, tableId, subtotal || 0, tax || 0, total || 0, employeeId || null, orderDate]
     );
     const orderId = orderResult.insertId;
-    
+
+    try {
+      const [vmin] = await db.execute(
+        `SELECT MIN(id) AS anchor FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending'`,
+        [branchId, tableId]
+      );
+      const visitAnchor = vmin[0]?.anchor != null ? Number(vmin[0].anchor) : orderId;
+      await db.execute(`UPDATE orders SET table_visit_id = ? WHERE id = ?`, [visitAnchor, orderId]);
+    } catch (e) {
+      if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+    }
+
     const specialReq = (item) => (item.specialRequest && String(item.specialRequest).trim()) || null;
     for (const item of items) {
       const servedBy = item.servedBy ? parseInt(item.servedBy, 10) : null;
@@ -2296,7 +2376,7 @@ app.get("/api/reports/sales", async (req, res) => {
     for (const row of settingsRows || []) settingsMap[row.setting_key] = row.setting_value;
     const taxRatePct = Math.max(0, Number(settingsMap.tax_rate ?? 0) || 0);
     const cardSurchargeRate = Math.max(0, Number(settingsMap.card_surcharge ?? 0) || 0) / 100;
-    let sql = `SELECT o.id, o.table_id AS tableId, t.area, t.name AS tableName, o.status, o.subtotal, o.discount, o.tax, o.total, o.payment_method AS paymentMethod,
+    const sqlRest = ` t.area, t.name AS tableName, o.status, o.subtotal, o.discount, o.tax, o.total, o.payment_method AS paymentMethod,
               o.employee_id AS employeeId, u.name AS employeeName, u.nickname AS employeeNickname,
               o.order_date AS orderDate, o.created_at AS time
        FROM orders o 
@@ -2304,16 +2384,33 @@ app.get("/api/reports/sales", async (req, res) => {
        LEFT JOIN users u ON u.employee_id = o.employee_id
        WHERE o.branch_id = ?`;
     const params = [branchId];
+    let dateSql = "";
     if (startHour != null && !isNaN(startHour)) {
       const hourPad = String(startHour).padStart(2, "0");
-      sql += ` AND o.created_at >= CONCAT(?, ' ', ?, ':00:00') AND o.created_at < CONCAT(DATE_ADD(?, INTERVAL 1 DAY), ' ', ?, ':00:00')`;
+      dateSql =
+        ` AND o.created_at >= CONCAT(?, ' ', ?, ':00:00') AND o.created_at < CONCAT(DATE_ADD(?, INTERVAL 1 DAY), ' ', ?, ':00:00')`;
       params.push(fromDate, hourPad, toDate, hourPad);
     } else {
-      sql += ` AND o.order_date BETWEEN ? AND ?`;
+      dateSql = ` AND o.order_date BETWEEN ? AND ?`;
       params.push(fromDate, toDate);
     }
-    sql += ` ORDER BY o.created_at DESC`;
-    const [rows] = await db.execute(sql, params);
+    const orderBy = ` ORDER BY o.created_at DESC`;
+    let rows;
+    try {
+      const sql =
+        `SELECT o.id, o.table_id AS tableId, o.table_visit_id AS tableVisitId,` +
+        sqlRest +
+        dateSql +
+        orderBy;
+      const [r] = await db.execute(sql, params);
+      rows = r;
+    } catch (e) {
+      if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+      const sql =
+        `SELECT o.id, o.table_id AS tableId, NULL AS tableVisitId,` + sqlRest + dateSql + orderBy;
+      const [r] = await db.execute(sql, params);
+      rows = r;
+    }
     const orderIds = rows.map((r) => r.id);
     const complimentaryMap = {};
     if (orderIds.length > 0) {
@@ -2350,6 +2447,7 @@ app.get("/api/reports/sales", async (req, res) => {
         // split_payments table may not exist on older DB
       }
     }
+    assignSalesVisitGroupMeta(rows);
     const list = rows.map((r) => {
       const rawTax = Number(r.tax || 0);
       const displayTax = taxRatePct <= 0 ? 0 : rawTax;
@@ -2359,6 +2457,7 @@ app.get("/api/reports/sales", async (req, res) => {
         ? round2(splitCardAmount * cardSurchargeRate)
         : (method === "credit" || method === "debit" ? round2(Number(r.total || 0) * cardSurchargeRate) : 0);
       const adjustedTotal = round2(Number(r.total || 0) - rawTax + displayTax + estimatedCardSurcharge);
+      const timeMs = r.time ? new Date(r.time).getTime() : 0;
       return {
         id: "ORD-" + r.id,
         tableId: r.tableId,
@@ -2373,15 +2472,96 @@ app.get("/api/reports/sales", async (req, res) => {
         total: adjustedTotal,
         status: r.status,
         time: r.time ? new Date(r.time).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }) : "—",
+        visitAnchorOrderId: r._visitAnchor,
+        timeMs,
+        _gk: r._visitGroupKey,
       };
     });
-    const totalOrders = list.length;
-    const totalSales = list.reduce((s, o) => s + o.total, 0);
-    const totalDiscounts = list.reduce((s, o) => s + o.discount, 0);
-    const totalComplimentary = list.reduce((s, o) => s + o.complimentary, 0);
-    const totalTax = list.reduce((s, o) => s + o.tax, 0);
-    const totalCardSurcharge = list.reduce((s, o) => s + o.cardSurcharge, 0);
-    res.json({ list, summary: { totalOrders, totalSales, totalDiscounts, totalComplimentary, totalTax, totalCardSurcharge } });
+    const forApi = (o) => {
+      const { timeMs, _gk, ...rest } = o;
+      return rest;
+    };
+    const byKey = new Map();
+    for (const o of list) {
+      if (!byKey.has(o._gk)) byKey.set(o._gk, []);
+      byKey.get(o._gk).push(o);
+    }
+    const groups = [];
+    for (const ordList of byKey.values()) {
+      ordList.sort((a, b) => b.timeMs - a.timeMs);
+      const head = ordList[0];
+      const uniqEmp = [...new Set(ordList.map((x) => x.employee))];
+      const empDisplay =
+        uniqEmp.length === 0
+          ? "—"
+          : uniqEmp.length <= 2
+            ? uniqEmp.join(", ")
+            : `${uniqEmp[0]} · +${uniqEmp.length - 1}`;
+      const allPaid = ordList.every((x) => x.status === "paid");
+      const anyPending = ordList.some((x) => x.status === "pending");
+      const status = allPaid ? "paid" : anyPending ? "pending" : String(head.status || "pending");
+      const minT = Math.min(...ordList.map((x) => x.timeMs));
+      const maxT = Math.max(...ordList.map((x) => x.timeMs));
+      const timeRange =
+        minT === 0 && maxT === 0
+          ? "—"
+          : minT === maxT
+            ? head.time
+            : `${new Date(minT).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })} – ${new Date(maxT).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}`;
+      const subtotalG = round2(ordList.reduce((s, x) => s + x.subtotal, 0));
+      const discountG = round2(ordList.reduce((s, x) => s + x.discount, 0));
+      const complimentaryG = round2(ordList.reduce((s, x) => s + x.complimentary, 0));
+      const taxG = round2(ordList.reduce((s, x) => s + x.tax, 0));
+      const cardG = round2(ordList.reduce((s, x) => s + x.cardSurcharge, 0));
+      const totalG = round2(ordList.reduce((s, x) => s + x.total, 0));
+      groups.push({
+        groupId: head._gk,
+        visitAnchorOrderId: head.visitAnchorOrderId,
+        sessionLabel:
+          ordList.length > 1
+            ? `${head.table} · ${ordList.length} orders (visit #${head.visitAnchorOrderId})`
+            : `${head.table} · visit #${head.visitAnchorOrderId}`,
+        area: head.area,
+        table: head.table,
+        tableId: head.tableId,
+        orderCount: ordList.length,
+        employee: empDisplay,
+        subtotal: subtotalG,
+        discount: discountG,
+        complimentary: complimentaryG,
+        tax: taxG,
+        cardSurcharge: cardG,
+        total: totalG,
+        status,
+        time: timeRange,
+        orders: ordList.map(forApi),
+        _sortMs: head.timeMs,
+      });
+    }
+    groups.sort((a, b) => b._sortMs - a._sortMs);
+    for (const g of groups) delete g._sortMs;
+
+    const listForResponse = list.map(forApi);
+    const totalOrders = listForResponse.length;
+    const totalSessions = groups.length;
+    const totalSales = listForResponse.reduce((s, o) => s + o.total, 0);
+    const totalDiscounts = listForResponse.reduce((s, o) => s + o.discount, 0);
+    const totalComplimentary = listForResponse.reduce((s, o) => s + o.complimentary, 0);
+    const totalTax = listForResponse.reduce((s, o) => s + o.tax, 0);
+    const totalCardSurcharge = listForResponse.reduce((s, o) => s + o.cardSurcharge, 0);
+    res.json({
+      list: listForResponse,
+      groups,
+      summary: {
+        totalOrders,
+        totalSessions,
+        totalSales,
+        totalDiscounts,
+        totalComplimentary,
+        totalTax,
+        totalCardSurcharge,
+      },
+    });
   } catch (err) {
     console.error("Sales report error:", err);
     res.status(500).json({ error: "Failed to load sales report" });
@@ -3573,7 +3753,9 @@ app.post("/api/tables/transfer", async (req, res) => {
     await db.execute(`UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?`, [branchId, fromTable]);
     const firstOrderId = orderIdsToMove[0];
     await db.execute(`UPDATE pos_tables SET status = 'occupied', current_order_id = ? WHERE branch_id = ? AND id = ?`, [firstOrderId, branchId, toTable]);
-    
+
+    await reconcileTableVisitIds(db, branchId, toTable);
+
     const msg = orderIdsToMove.length > 1
       ? `${orderIdsToMove.length} orders transferred from ${fromTable} to ${toTable}`
       : `Order transferred from ${fromTable} to ${toTable}`;
@@ -3651,7 +3833,9 @@ app.post("/api/tables/merge", async (req, res) => {
       INSERT INTO table_transfers (order_id, from_table, to_table, transfer_type, transferred_by, reason)
       VALUES (?, ?, ?, 'merge', ?, ?)
     `, [targetOrderId, sourceTableId, targetTableId, transferredBy, reason || null]);
-    
+
+    await reconcileTableVisitIds(db, branchId, targetTableId);
+
     res.json({ ok: true, message: "Orders merged successfully" });
   } catch (err) {
     console.error("Merge tables error:", err);

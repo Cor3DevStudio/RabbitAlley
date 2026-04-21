@@ -21,7 +21,7 @@ import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { FileText, FileSpreadsheet, File, Filter, Calculator, ShoppingBag, DollarSign, Percent, Receipt, Users, CheckCircle, Printer, Download, Plus, ChevronDown, X, Eye, MapPin, Clock, CreditCard } from "lucide-react";
+import { FileText, FileSpreadsheet, File, Filter, Calculator, ShoppingBag, DollarSign, Percent, Receipt, Users, CheckCircle, Printer, Download, Plus, ChevronDown, ChevronRight, X, Eye, MapPin, Clock, CreditCard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -36,6 +36,7 @@ type ReportTab = "sales" | "payroll";
 
 interface OrderRow {
   id: string;
+  tableId?: string | null;
   area: string;
   table: string;
   employee: string;
@@ -47,6 +48,50 @@ interface OrderRow {
   total: number;
   status: string;
   time: string;
+  visitAnchorOrderId?: number;
+}
+
+/** One table visit / bill group for Sales Report (may contain multiple order tabs). */
+interface SalesVisitGroup {
+  groupId: string;
+  visitAnchorOrderId: number;
+  sessionLabel: string;
+  area: string;
+  table: string;
+  tableId: string | null;
+  orderCount: number;
+  employee: string;
+  subtotal: number;
+  discount: number;
+  complimentary: number;
+  tax: number;
+  cardSurcharge: number;
+  total: number;
+  status: string;
+  time: string;
+  orders: OrderRow[];
+}
+
+function buildSalesGroupsFromList(list: OrderRow[]): SalesVisitGroup[] {
+  return list.map((o) => ({
+    groupId: o.id,
+    visitAnchorOrderId: Number(String(o.id).replace(/^ORD-/i, "")) || 0,
+    sessionLabel: `${o.table} · 1 order`,
+    area: o.area,
+    table: o.table,
+    tableId: o.tableId ?? null,
+    orderCount: 1,
+    employee: o.employee,
+    subtotal: o.subtotal,
+    discount: o.discount,
+    complimentary: o.complimentary,
+    tax: o.tax,
+    cardSurcharge: o.cardSurcharge,
+    total: o.total,
+    status: o.status,
+    time: o.time,
+    orders: [o],
+  }));
 }
 
 export interface BreakdownItem {
@@ -316,8 +361,11 @@ export default function Reports() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [salesList, setSalesList] = useState<OrderRow[]>([]);
+  const [salesGroups, setSalesGroups] = useState<SalesVisitGroup[]>([]);
+  const [expandedVisits, setExpandedVisits] = useState<Record<string, boolean>>({});
   const [salesSummary, setSalesSummary] = useState({
     totalOrders: 0,
+    totalSessions: 0,
     totalSales: 0,
     totalDiscounts: 0,
     totalComplimentary: 0,
@@ -343,8 +391,18 @@ export default function Reports() {
     try {
       const hour = dayStartHour === "" ? undefined : Number(dayStartHour);
       const res = await api.reports.sales(dateFrom, dateTo, hour);
-      setSalesList(res.list);
-      setSalesSummary(res.summary);
+      const list = res.list as OrderRow[];
+      setSalesList(list);
+      const groups =
+        res.groups && res.groups.length > 0
+          ? (res.groups as SalesVisitGroup[])
+          : buildSalesGroupsFromList(list);
+      setSalesGroups(groups);
+      setExpandedVisits({});
+      setSalesSummary({
+        ...res.summary,
+        totalSessions: res.summary.totalSessions ?? groups.length,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load sales report");
     } finally {
@@ -428,6 +486,10 @@ export default function Reports() {
     }
   }, []);
 
+  const toggleVisit = useCallback((groupId: string) => {
+    setExpandedVisits((p) => ({ ...p, [groupId]: !p[groupId] }));
+  }, []);
+
   const handleFilter = useCallback(() => {
     if (dateFrom > dateTo) {
       toast.error("From date must be before or equal to To date");
@@ -452,14 +514,29 @@ export default function Reports() {
     try {
       if (activeTab === "sales") {
         if (format === "CSV") {
-          const headers = ["Transaction No", "Area", "Table", "Employee", "Subtotal", "Discount", "Complimentary", "Tax", "Card Surcharge", "Total", "Status", "Time"];
-          const rows = salesList.map((o) => [o.id, o.area, o.table, o.employee, o.subtotal, o.discount, o.complimentary, o.tax, o.cardSurcharge, o.total, o.status, o.time]);
+          const headers = ["Visit #", "Transaction No", "Area", "Table", "Employee", "Subtotal", "Discount", "Complimentary", "Tax", "Card Surcharge", "Total", "Status", "Time"];
+          const rows = salesList.map((o) => [
+            o.visitAnchorOrderId ?? "",
+            o.id,
+            o.area,
+            o.table,
+            o.employee,
+            o.subtotal,
+            o.discount,
+            o.complimentary,
+            o.tax,
+            o.cardSurcharge,
+            o.total,
+            o.status,
+            o.time,
+          ]);
           const csv = [headers.join(","), ...rows.map((r) => r.map((c) => (typeof c === "string" && c.includes(",") ? `"${c}"` : c)).join(","))].join("\n");
           const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
           downloadBlob(blob, `sales_report_${fromTo}.csv`);
         } else if (format === "Excel") {
           const ws = XLSX.utils.json_to_sheet(
             salesList.map((o) => ({
+              "Visit #": o.visitAnchorOrderId ?? "",
               "Order No": o.id,
               Area: o.area,
               Table: o.table,
@@ -482,11 +559,29 @@ export default function Reports() {
           doc.setFontSize(14);
           doc.text(`Sales Report ${dateFrom} to ${dateTo}`, 14, 12);
           doc.setFontSize(10);
-          doc.text(`Total Orders: ${salesSummary.totalOrders}  |  Total Sales: ₱${salesSummary.totalSales.toFixed(2)}  |  Total Discount: ₱${salesSummary.totalDiscounts.toFixed(2)}  |  Tax: ₱${salesSummary.totalTax.toFixed(2)}`, 14, 20);
+          doc.text(
+            `Sessions: ${salesSummary.totalSessions}  |  Order lines: ${salesSummary.totalOrders}  |  Total Sales: ₱${salesSummary.totalSales.toFixed(2)}  |  Discount: ₱${salesSummary.totalDiscounts.toFixed(2)}  |  Tax: ₱${salesSummary.totalTax.toFixed(2)}`,
+            14,
+            20
+          );
           autoTable(doc, {
             startY: 24,
-            head: [["Transaction No", "Area", "Table", "Employee", "Subtotal", "Discount", "Complimentary", "Tax", "Card Surcharge", "Total", "Status", "Time"]],
-            body: salesList.map((o) => [o.id, o.area, o.table, o.employee, o.subtotal.toFixed(2), o.discount.toFixed(2), o.complimentary.toFixed(2), o.tax.toFixed(2), o.cardSurcharge.toFixed(2), o.total.toFixed(2), o.status, o.time]),
+            head: [["Visit #", "Transaction No", "Area", "Table", "Employee", "Subtotal", "Discount", "Complimentary", "Tax", "Card Surcharge", "Total", "Status", "Time"]],
+            body: salesList.map((o) => [
+              String(o.visitAnchorOrderId ?? ""),
+              o.id,
+              o.area,
+              o.table,
+              o.employee,
+              o.subtotal.toFixed(2),
+              o.discount.toFixed(2),
+              o.complimentary.toFixed(2),
+              o.tax.toFixed(2),
+              o.cardSurcharge.toFixed(2),
+              o.total.toFixed(2),
+              o.status,
+              o.time,
+            ]),
           });
           const summaryY = ((doc as unknown) as { lastAutoTable?: { finalY: number } }).lastAutoTable
             ? ((doc as unknown) as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10
@@ -997,9 +1092,14 @@ export default function Reports() {
 
       {activeTab === "sales" && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
             <StatCard
-              label="Transactions"
+              label="Table sessions"
+              value={salesSummary.totalSessions}
+              icon={<MapPin className="w-5 h-5" />}
+            />
+            <StatCard
+              label="Order lines"
               value={salesSummary.totalOrders}
               icon={<ShoppingBag className="w-5 h-5" />}
             />
@@ -1029,7 +1129,8 @@ export default function Reports() {
             <Table>
               <TableHeader className="sticky top-0 bg-muted/95 z-10">
                 <TableRow>
-                  <TableHead>Transaction</TableHead>
+                  <TableHead className="w-10" />
+                  <TableHead>Visit / orders</TableHead>
                   <TableHead>Area</TableHead>
                   <TableHead>Table</TableHead>
                   <TableHead>Employee</TableHead>
@@ -1046,43 +1147,122 @@ export default function Reports() {
               <TableBody>
                 {loadingSales ? (
                   <TableRow>
-                    <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
                       Loading…
                     </TableCell>
                   </TableRow>
                 ) : (
-                  salesList.map((order) => (
-                    <TableRow
-                      key={order.id}
-                      className="cursor-pointer hover:bg-muted/60 transition-colors"
-                      onClick={() => handleViewOrder(order.id)}
-                    >
-                      <TableCell className="font-mono text-xs">{order.id}</TableCell>
-                      <TableCell>{order.area}</TableCell>
-                      <TableCell>{order.table}</TableCell>
-                      <TableCell className="text-muted-foreground">{order.employee}</TableCell>
-                      <TableCell className="text-right">{formatCurrency(order.subtotal)}</TableCell>
-                      <TableCell className="text-right text-muted-foreground">{formatCurrency(order.discount)}</TableCell>
-                      <TableCell className="text-right text-purple-600">{formatCurrency(order.complimentary)}</TableCell>
-                      <TableCell className="text-right text-muted-foreground">{formatCurrency(order.tax)}</TableCell>
-                      <TableCell className="text-right text-amber-600">{formatCurrency(order.cardSurcharge)}</TableCell>
-                      <TableCell className="text-right font-medium">{formatCurrency(order.total)}</TableCell>
-                      <TableCell>
-                        <Badge className={cn(
-                          order.status === "paid"
-                            ? "bg-success/20 text-success border-success/30"
-                            : "bg-warning/20 text-warning border-warning/30"
-                        )}>
-                          {order.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{order.time}</TableCell>
-                    </TableRow>
-                  ))
+                  salesGroups.flatMap((g) => {
+                    const expanded = !!expandedVisits[g.groupId];
+                    const idPreview =
+                      g.orderCount <= 3
+                        ? g.orders.map((o) => o.id).join(" · ")
+                        : `${g.orders
+                            .slice(0, 2)
+                            .map((o) => o.id)
+                            .join(" · ")} · +${g.orderCount - 2}`;
+                    const parent = (
+                      <TableRow
+                        key={g.groupId}
+                        className={cn(
+                          "transition-colors",
+                          g.orderCount > 1
+                            ? "bg-muted/40 cursor-pointer hover:bg-muted/55"
+                            : "cursor-pointer hover:bg-muted/60"
+                        )}
+                        onClick={() => {
+                          if (g.orderCount > 1) toggleVisit(g.groupId);
+                          else void handleViewOrder(g.orders[0].id);
+                        }}
+                      >
+                        <TableCell className="w-10 align-middle">
+                          {g.orderCount > 1 ? (
+                            <button
+                              type="button"
+                              className="inline-flex p-1 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                              aria-expanded={expanded}
+                              aria-label={expanded ? "Hide orders in this visit" : "Show orders in this visit"}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleVisit(g.groupId);
+                              }}
+                            >
+                              <ChevronRight className={cn("w-4 h-4 transition-transform", expanded && "rotate-90")} />
+                            </button>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm font-medium leading-snug">{g.sessionLabel}</div>
+                          {g.orderCount > 1 ? (
+                            <div className="text-xs text-muted-foreground font-mono mt-1">{idPreview}</div>
+                          ) : (
+                            <div className="text-xs font-mono text-muted-foreground mt-0.5">{g.orders[0]?.id}</div>
+                          )}
+                        </TableCell>
+                        <TableCell>{g.area}</TableCell>
+                        <TableCell>{g.table}</TableCell>
+                        <TableCell className="text-muted-foreground text-sm">{g.employee}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(g.subtotal)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(g.discount)}</TableCell>
+                        <TableCell className="text-right text-purple-600">{formatCurrency(g.complimentary)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(g.tax)}</TableCell>
+                        <TableCell className="text-right text-amber-600">{formatCurrency(g.cardSurcharge)}</TableCell>
+                        <TableCell className="text-right font-medium">{formatCurrency(g.total)}</TableCell>
+                        <TableCell>
+                          <Badge
+                            className={cn(
+                              g.status === "paid"
+                                ? "bg-success/20 text-success border-success/30"
+                                : "bg-warning/20 text-warning border-warning/30"
+                            )}
+                          >
+                            {g.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">{g.time}</TableCell>
+                      </TableRow>
+                    );
+                    const children =
+                      g.orderCount > 1 && expanded
+                        ? g.orders.map((order) => (
+                            <TableRow
+                              key={`${g.groupId}-${order.id}`}
+                              className="cursor-pointer border-l-4 border-l-primary/25 bg-background hover:bg-muted/50"
+                              onClick={() => void handleViewOrder(order.id)}
+                            >
+                              <TableCell />
+                              <TableCell className="font-mono text-xs pl-8 text-muted-foreground">{order.id}</TableCell>
+                              <TableCell className="text-muted-foreground text-sm">{order.area}</TableCell>
+                              <TableCell className="text-muted-foreground text-sm">{order.table}</TableCell>
+                              <TableCell className="text-muted-foreground text-sm">{order.employee}</TableCell>
+                              <TableCell className="text-right text-sm">{formatCurrency(order.subtotal)}</TableCell>
+                              <TableCell className="text-right text-muted-foreground text-sm">{formatCurrency(order.discount)}</TableCell>
+                              <TableCell className="text-right text-purple-600 text-sm">{formatCurrency(order.complimentary)}</TableCell>
+                              <TableCell className="text-right text-muted-foreground text-sm">{formatCurrency(order.tax)}</TableCell>
+                              <TableCell className="text-right text-amber-600 text-sm">{formatCurrency(order.cardSurcharge)}</TableCell>
+                              <TableCell className="text-right font-medium text-sm">{formatCurrency(order.total)}</TableCell>
+                              <TableCell>
+                                <Badge
+                                  className={cn(
+                                    "text-xs",
+                                    order.status === "paid"
+                                      ? "bg-success/20 text-success border-success/30"
+                                      : "bg-warning/20 text-warning border-warning/30"
+                                  )}
+                                >
+                                  {order.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-muted-foreground text-sm">{order.time}</TableCell>
+                            </TableRow>
+                          ))
+                        : [];
+                    return [parent, ...children];
+                  })
                 )}
                 {!loadingSales && salesList.length > 0 && (
                   <TableRow className="bg-muted/40 font-semibold">
-                    <TableCell colSpan={4}>TOTAL</TableCell>
+                    <TableCell colSpan={5}>TOTAL</TableCell>
                     <TableCell className="text-right">{formatCurrency(salesList.reduce((s, o) => s + o.subtotal, 0))}</TableCell>
                     <TableCell className="text-right">{formatCurrency(salesSummary.totalDiscounts)}</TableCell>
                     <TableCell className="text-right">{formatCurrency(salesSummary.totalComplimentary)}</TableCell>

@@ -260,6 +260,7 @@ export const api = {
       return fetchApi<{
         list: Array<{
           id: string;
+          tableId?: string | null;
           area: string;
           table: string;
           employee: string;
@@ -271,9 +272,45 @@ export const api = {
           total: number;
           status: string;
           time: string;
+          visitAnchorOrderId?: number;
+        }>;
+        groups?: Array<{
+          groupId: string;
+          visitAnchorOrderId: number;
+          sessionLabel: string;
+          area: string;
+          table: string;
+          tableId: string | null;
+          orderCount: number;
+          employee: string;
+          subtotal: number;
+          discount: number;
+          complimentary: number;
+          tax: number;
+          cardSurcharge: number;
+          total: number;
+          status: string;
+          time: string;
+          orders: Array<{
+            id: string;
+            tableId?: string | null;
+            area: string;
+            table: string;
+            employee: string;
+            subtotal: number;
+            discount: number;
+            complimentary: number;
+            tax: number;
+            cardSurcharge: number;
+            total: number;
+            status: string;
+            time: string;
+            visitAnchorOrderId?: number;
+          }>;
         }>;
         summary: {
           totalOrders: number;
+          totalSessions?: number;
           totalSales: number;
           totalDiscounts: number;
           totalComplimentary: number;
