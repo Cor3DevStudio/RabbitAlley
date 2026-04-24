@@ -10,6 +10,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  tableStickyHeaderRowClassName,
 } from "@/components/ui/table";
 import { Filter, RefreshCw, ClipboardList } from "lucide-react";
 import { api } from "@/lib/api";
@@ -144,9 +145,9 @@ export default function AuditLogs() {
         </Button>
       </div>
       <div className="rounded-lg border border-border overflow-hidden">
-        <Table>
+        <Table wrapperClassName="max-h-[650px]">
           <TableHeader>
-            <TableRow>
+            <TableRow className={tableStickyHeaderRowClassName}>
               <TableHead className="w-24">Time</TableHead>
               <TableHead>Employee</TableHead>
               <TableHead>Role</TableHead>

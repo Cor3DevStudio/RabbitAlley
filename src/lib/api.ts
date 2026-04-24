@@ -323,11 +323,19 @@ export const api = {
       const q = new URLSearchParams();
       if (from) q.set("from", from);
       if (to) q.set("to", to || from || new Date().toISOString().slice(0, 10));
-      return fetchApi<Array<{
+      type PayrollRowApi = {
         id: string; employeeId: string; name: string; defaultAllowance: number; perHour: number;
         allowance: number; hours: number; commission: number; incentives: number; adjustments: number; deductions: number;
         total: number; netPayout: number; status: string; approvedBy: string | null;
-      }>>("/api/reports/payroll?" + q.toString());
+        ldCount?: number; ldCountRealtime?: number; ldAmount?: number; timeIn?: string | null;
+        incentivesBreakdown?: Array<{ title: string; amount: number }> | null;
+        adjustmentsBreakdown?: Array<{ title: string; amount: number }> | null;
+        deductionsBreakdown?: Array<{ title: string; amount: number }> | null;
+      };
+      return fetchApi<
+        | PayrollRowApi[]
+        | { rows: PayrollRowApi[]; totalLdQtyPaid?: number; totalLdQtyRealtime?: number }
+      >("/api/reports/payroll?" + q.toString());
     },
     updatePayout: (id: string, body: {
       incentives?: number;

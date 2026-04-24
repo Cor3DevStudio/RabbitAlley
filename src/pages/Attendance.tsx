@@ -5,7 +5,15 @@ import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  tableStickyHeaderRowClassName,
+} from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { LogIn, LogOut, Clock, Calendar, RefreshCw } from "lucide-react";
@@ -255,10 +263,10 @@ export default function Attendance() {
             ) : history.length === 0 ? (
               <p className="text-sm text-muted-foreground">No records. Adjust dates and click Load.</p>
             ) : (
-              <div className="max-h-64 overflow-auto rounded-md border">
-                <Table>
+              <div className="rounded-md border overflow-hidden">
+                <Table wrapperClassName="max-h-64">
                   <TableHeader>
-                    <TableRow>
+                    <TableRow className={tableStickyHeaderRowClassName}>
                       <TableHead>Date</TableHead>
                       <TableHead>Time in</TableHead>
                       <TableHead>Time out</TableHead>

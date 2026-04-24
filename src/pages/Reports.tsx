@@ -10,6 +10,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  tableStickyHeaderRowClassName,
 } from "@/components/ui/table";
 import {
   Dialog,
@@ -21,7 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { FileText, FileSpreadsheet, File, Filter, Calculator, ShoppingBag, DollarSign, Percent, Receipt, Users, CheckCircle, Printer, Download, Plus, ChevronDown, ChevronRight, X, Eye, MapPin, Clock, CreditCard } from "lucide-react";
+import { FileText, FileSpreadsheet, File, Filter, Calculator, ShoppingBag, DollarSign, Percent, Receipt, Users, CheckCircle, Printer, Download, Plus, ChevronDown, X, Eye, MapPin, Clock, CreditCard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -51,49 +52,6 @@ interface OrderRow {
   visitAnchorOrderId?: number;
 }
 
-/** One table visit / bill group for Sales Report (may contain multiple order tabs). */
-interface SalesVisitGroup {
-  groupId: string;
-  visitAnchorOrderId: number;
-  sessionLabel: string;
-  area: string;
-  table: string;
-  tableId: string | null;
-  orderCount: number;
-  employee: string;
-  subtotal: number;
-  discount: number;
-  complimentary: number;
-  tax: number;
-  cardSurcharge: number;
-  total: number;
-  status: string;
-  time: string;
-  orders: OrderRow[];
-}
-
-function buildSalesGroupsFromList(list: OrderRow[]): SalesVisitGroup[] {
-  return list.map((o) => ({
-    groupId: o.id,
-    visitAnchorOrderId: Number(String(o.id).replace(/^ORD-/i, "")) || 0,
-    sessionLabel: `${o.table} · 1 order`,
-    area: o.area,
-    table: o.table,
-    tableId: o.tableId ?? null,
-    orderCount: 1,
-    employee: o.employee,
-    subtotal: o.subtotal,
-    discount: o.discount,
-    complimentary: o.complimentary,
-    tax: o.tax,
-    cardSurcharge: o.cardSurcharge,
-    total: o.total,
-    status: o.status,
-    time: o.time,
-    orders: [o],
-  }));
-}
-
 export interface BreakdownItem {
   title: string;
   amount: number;
@@ -106,7 +64,10 @@ interface PayrollRow {
   timeIn?: string | null;
   budget: number;
   commission: number;
+  /** LD drink qty on paid orders only (used for commission / payout) */
   ldCount?: number;
+  /** LD drink qty including open (pending) orders — realtime floor count */
+  ldCountRealtime?: number;
   /** Total LD sales amount (sum of LD drink prices for this lady) */
   ldAmount?: number;
   incentives: number;
@@ -289,7 +250,7 @@ const PayrollTableRow = memo(function PayrollTableRow({
       <TableCell className="font-mono text-xs">{row.employeeId}</TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground text-sm">{row.timeIn ?? "—"}</TableCell>
       <TableCell className="text-right">{formatCurrency(row.budget)}</TableCell>
-      <TableCell className="text-center font-semibold tabular-nums">{row.ldCount ?? 0}</TableCell>
+      <TableCell className="text-center font-semibold tabular-nums">{row.ldCountRealtime ?? row.ldCount ?? 0}</TableCell>
       <TableCell className="text-right">{formatCurrency((row.ldCount ?? 0) * 100)}</TableCell>
       <TableCell className="text-right tabular-nums">{formatCurrency(row.incentives)}</TableCell>
       <TableCell className="p-1">
@@ -361,8 +322,6 @@ export default function Reports() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [salesList, setSalesList] = useState<OrderRow[]>([]);
-  const [salesGroups, setSalesGroups] = useState<SalesVisitGroup[]>([]);
-  const [expandedVisits, setExpandedVisits] = useState<Record<string, boolean>>({});
   const [salesSummary, setSalesSummary] = useState({
     totalOrders: 0,
     totalSessions: 0,
@@ -393,15 +352,9 @@ export default function Reports() {
       const res = await api.reports.sales(dateFrom, dateTo, hour);
       const list = res.list as OrderRow[];
       setSalesList(list);
-      const groups =
-        res.groups && res.groups.length > 0
-          ? (res.groups as SalesVisitGroup[])
-          : buildSalesGroupsFromList(list);
-      setSalesGroups(groups);
-      setExpandedVisits({});
       setSalesSummary({
         ...res.summary,
-        totalSessions: res.summary.totalSessions ?? groups.length,
+        totalSessions: res.summary.totalSessions ?? 0,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load sales report");
@@ -415,12 +368,17 @@ export default function Reports() {
     setLoadingPayroll(true);
     setError(null);
     try {
-      const list = await api.reports.payroll(dateFrom, dateTo);
+      const rawPayroll = await api.reports.payroll(dateFrom, dateTo);
+      const list = Array.isArray(rawPayroll) ? rawPayroll : rawPayroll.rows;
+      const serverTotalLdRealtime = Array.isArray(rawPayroll)
+        ? null
+        : (typeof rawPayroll.totalLdQtyRealtime === "number" ? rawPayroll.totalLdQtyRealtime : null);
       const mappedPayroll = list.map((p) => {
         const incB = (p as { incentivesBreakdown?: BreakdownItem[] }).incentivesBreakdown ?? null;
         const otherInc = Array.isArray(incB) ? incB.reduce((s, x) => s + (x.amount ?? 0), 0) : 0;
         const budget = Number(p.allowance ?? 0);
         const ldCount = Number((p as { ldCount?: number }).ldCount ?? 0);
+        const ldCountRealtime = Number((p as { ldCountRealtime?: number }).ldCountRealtime ?? ldCount);
         const commission = ldCount * 100;
         const incentives = Number(p.incentives ?? 0);
         const adjustments = Number(p.adjustments ?? 0);
@@ -434,6 +392,7 @@ export default function Reports() {
           budget,
           commission,
           ldCount,
+          ldCountRealtime,
           ldAmount: Number((p as { ldAmount?: number }).ldAmount ?? 0),
           incentives,
           adjustments,
@@ -455,11 +414,14 @@ export default function Reports() {
             totalPayout: acc.totalPayout + calculatedPayout,
             totalIncentives: acc.totalIncentives + row.incentives,
             totalDeductions: acc.totalDeductions + row.deductions,
-            totalLd: acc.totalLd + (row.ldCount ?? 0),
+            totalLd: acc.totalLd + (row.ldCountRealtime ?? row.ldCount ?? 0),
           };
         },
         { totalEmployees: 0, totalPayout: 0, totalIncentives: 0, totalDeductions: 0, totalLd: 0 }
       );
+      if (serverTotalLdRealtime != null && !Number.isNaN(serverTotalLdRealtime)) {
+        summary.totalLd = serverTotalLdRealtime;
+      }
       setPayrollSummary(summary);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load payroll report");
@@ -484,10 +446,6 @@ export default function Reports() {
     } finally {
       setOrderDetailLoading(false);
     }
-  }, []);
-
-  const toggleVisit = useCallback((groupId: string) => {
-    setExpandedVisits((p) => ({ ...p, [groupId]: !p[groupId] }));
   }, []);
 
   const handleFilter = useCallback(() => {
@@ -598,13 +556,13 @@ export default function Reports() {
       } else {
         if (format === "CSV") {
           const otherInc = (p: PayrollRow) => Array.isArray(p.incentivesBreakdown) ? p.incentivesBreakdown.reduce((s, x) => s + x.amount, 0) : 0;
-          const headers = ["Employee ID", "Name", "Time In", "Budget", "Total LD", "Total LD Commission", "Incentives", "Other Incentives", "Adjustments", "Deductions", "Net Payout", "Status", "Approved By"];
+          const headers = ["Employee ID", "Name", "Time In", "Budget", "Total LD (incl. open)", "LD comm. (paid)", "Incentives", "Other Incentives", "Adjustments", "Deductions", "Net Payout", "Status", "Approved By"];
           const rows = payroll.map((p) => [
             p.employeeId,
             p.name,
             p.timeIn ?? "",
             p.budget,
-            p.ldCount ?? 0,
+            p.ldCountRealtime ?? p.ldCount ?? 0,
             (p.ldCount ?? 0) * 100,
             p.incentives,
             otherInc(p),
@@ -625,8 +583,8 @@ export default function Reports() {
               Name: p.name,
               "Time In": p.timeIn ?? "",
               Budget: p.budget,
-              "Total LD": p.ldCount ?? 0,
-              "Total LD Commission": (p.ldCount ?? 0) * 100,
+              "Total LD (incl. open)": p.ldCountRealtime ?? p.ldCount ?? 0,
+              "LD comm. (paid)": (p.ldCount ?? 0) * 100,
               Incentives: p.incentives,
               "Other Incentives": otherInc(p),
               Adjustments: p.adjustments,
@@ -648,13 +606,13 @@ export default function Reports() {
           const otherInc = (p: PayrollRow) => Array.isArray(p.incentivesBreakdown) ? p.incentivesBreakdown.reduce((s, x) => s + x.amount, 0) : 0;
           autoTable(doc, {
             startY: 24,
-            head: [["Employee ID", "Name", "Time In", "Budget", "Total LD", "Comm (₱)", "Incent", "Other Inc", "Adj", "Ded", "Net", "Status"]],
+            head: [["Employee ID", "Name", "Time In", "Budget", "LD (open)", "Comm (₱)", "Incent", "Other Inc", "Adj", "Ded", "Net", "Status"]],
             body: payroll.map((p) => [
               p.employeeId,
               p.name,
               p.timeIn ?? "—",
               p.budget.toFixed(2),
-              String(p.ldCount ?? 0),
+              String(p.ldCountRealtime ?? p.ldCount ?? 0),
               ((p.ldCount ?? 0) * 100).toFixed(2),
               p.incentives.toFixed(2),
               otherInc(p).toFixed(2),
@@ -735,7 +693,7 @@ export default function Reports() {
     if (!printWindow) return;
 
     const dateTimeIn = `${dateFrom} to ${dateTo}`;
-    const ldCount = row.ldCount ?? 0;
+    const ldCountLive = row.ldCountRealtime ?? row.ldCount ?? 0;
     const totalPayout = row.netPayout;
     const generatedAt = new Date().toLocaleString();
 
@@ -782,7 +740,7 @@ export default function Reports() {
           <div class="section">
             <div class="section-title">Earnings</div>
             <div class="row"><span class="label">Budget</span><span class="value">${row.budget.toFixed(2)}</span></div>
-            <div class="row"><span class="label">LD count</span><span class="value">${ldCount}</span></div>
+            <div class="row"><span class="label">LD count (incl. open)</span><span class="value">${ldCountLive}</span></div>
             <div class="row"><span class="label">Commission</span><span class="value">${row.commission.toFixed(2)}</span></div>
             ${(row.incentivesBreakdown && row.incentivesBreakdown.length > 0)
               ? row.incentivesBreakdown.map((i: BreakdownItem) => `<div class="row"><span class="label">${i.title || "Incentive"}</span><span class="value">${i.amount.toFixed(2)}</span></div>`).join("")
@@ -822,7 +780,7 @@ export default function Reports() {
 
   const handleDownloadPayslipPdf = useCallback((row: PayrollRow) => {
     const dateTimeIn = `${dateFrom} to ${dateTo}`;
-    const ldCount = row.ldCount ?? 0;
+    const ldCountLive = row.ldCountRealtime ?? row.ldCount ?? 0;
     const totalPayout = row.netPayout;
     const generatedAt = new Date().toLocaleString();
 
@@ -875,8 +833,8 @@ export default function Reports() {
     doc.text("Budget", left, y);
     doc.text(row.budget.toFixed(2), right, y, { align: "right" });
     y += 5;
-    doc.text("LD count", left, y);
-    doc.text(String(ldCount), right, y, { align: "right" });
+    doc.text("LD count (incl. open)", left, y);
+    doc.text(String(ldCountLive), right, y, { align: "right" });
     y += 5;
     doc.text("Commission", left, y);
     doc.text(row.commission.toFixed(2), right, y, { align: "right" });
@@ -1125,12 +1083,11 @@ export default function Reports() {
             />
           </div>
 
-          <div className="rounded-lg border border-border overflow-hidden max-h-[75vh] overflow-y-auto min-h-[200px]">
-            <Table>
-              <TableHeader className="sticky top-0 bg-muted/95 z-10">
-                <TableRow>
-                  <TableHead className="w-10" />
-                  <TableHead>Visit / orders</TableHead>
+          <div className="rounded-lg border border-border overflow-hidden min-h-[200px]">
+            <Table wrapperClassName="max-h-[75vh]">
+              <TableHeader>
+                <TableRow className={tableStickyHeaderRowClassName}>
+                  <TableHead>Order</TableHead>
                   <TableHead>Area</TableHead>
                   <TableHead>Table</TableHead>
                   <TableHead>Employee</TableHead>
@@ -1147,122 +1104,50 @@ export default function Reports() {
               <TableBody>
                 {loadingSales ? (
                   <TableRow>
-                    <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
                       Loading…
                     </TableCell>
                   </TableRow>
                 ) : (
-                  salesGroups.flatMap((g) => {
-                    const expanded = !!expandedVisits[g.groupId];
-                    const idPreview =
-                      g.orderCount <= 3
-                        ? g.orders.map((o) => o.id).join(" · ")
-                        : `${g.orders
-                            .slice(0, 2)
-                            .map((o) => o.id)
-                            .join(" · ")} · +${g.orderCount - 2}`;
-                    const parent = (
-                      <TableRow
-                        key={g.groupId}
-                        className={cn(
-                          "transition-colors",
-                          g.orderCount > 1
-                            ? "bg-muted/40 cursor-pointer hover:bg-muted/55"
-                            : "cursor-pointer hover:bg-muted/60"
+                  salesList.map((order) => (
+                    <TableRow
+                      key={order.id}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => void handleViewOrder(order.id)}
+                    >
+                      <TableCell>
+                        <div className="font-mono text-sm font-medium">{order.id}</div>
+                        {order.visitAnchorOrderId != null && order.visitAnchorOrderId > 0 && (
+                          <div className="text-xs text-muted-foreground mt-0.5">Visit #{order.visitAnchorOrderId}</div>
                         )}
-                        onClick={() => {
-                          if (g.orderCount > 1) toggleVisit(g.groupId);
-                          else void handleViewOrder(g.orders[0].id);
-                        }}
-                      >
-                        <TableCell className="w-10 align-middle">
-                          {g.orderCount > 1 ? (
-                            <button
-                              type="button"
-                              className="inline-flex p-1 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                              aria-expanded={expanded}
-                              aria-label={expanded ? "Hide orders in this visit" : "Show orders in this visit"}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleVisit(g.groupId);
-                              }}
-                            >
-                              <ChevronRight className={cn("w-4 h-4 transition-transform", expanded && "rotate-90")} />
-                            </button>
-                          ) : null}
-                        </TableCell>
-                        <TableCell>
-                          <div className="text-sm font-medium leading-snug">{g.sessionLabel}</div>
-                          {g.orderCount > 1 ? (
-                            <div className="text-xs text-muted-foreground font-mono mt-1">{idPreview}</div>
-                          ) : (
-                            <div className="text-xs font-mono text-muted-foreground mt-0.5">{g.orders[0]?.id}</div>
+                      </TableCell>
+                      <TableCell>{order.area}</TableCell>
+                      <TableCell>{order.table}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{order.employee}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(order.subtotal)}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">{formatCurrency(order.discount)}</TableCell>
+                      <TableCell className="text-right text-purple-600">{formatCurrency(order.complimentary)}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">{formatCurrency(order.tax)}</TableCell>
+                      <TableCell className="text-right text-amber-600">{formatCurrency(order.cardSurcharge)}</TableCell>
+                      <TableCell className="text-right font-medium">{formatCurrency(order.total)}</TableCell>
+                      <TableCell>
+                        <Badge
+                          className={cn(
+                            order.status === "paid"
+                              ? "bg-success/20 text-success border-success/30"
+                              : "bg-warning/20 text-warning border-warning/30"
                           )}
-                        </TableCell>
-                        <TableCell>{g.area}</TableCell>
-                        <TableCell>{g.table}</TableCell>
-                        <TableCell className="text-muted-foreground text-sm">{g.employee}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(g.subtotal)}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">{formatCurrency(g.discount)}</TableCell>
-                        <TableCell className="text-right text-purple-600">{formatCurrency(g.complimentary)}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">{formatCurrency(g.tax)}</TableCell>
-                        <TableCell className="text-right text-amber-600">{formatCurrency(g.cardSurcharge)}</TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(g.total)}</TableCell>
-                        <TableCell>
-                          <Badge
-                            className={cn(
-                              g.status === "paid"
-                                ? "bg-success/20 text-success border-success/30"
-                                : "bg-warning/20 text-warning border-warning/30"
-                            )}
-                          >
-                            {g.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">{g.time}</TableCell>
-                      </TableRow>
-                    );
-                    const children =
-                      g.orderCount > 1 && expanded
-                        ? g.orders.map((order) => (
-                            <TableRow
-                              key={`${g.groupId}-${order.id}`}
-                              className="cursor-pointer border-l-4 border-l-primary/25 bg-background hover:bg-muted/50"
-                              onClick={() => void handleViewOrder(order.id)}
-                            >
-                              <TableCell />
-                              <TableCell className="font-mono text-xs pl-8 text-muted-foreground">{order.id}</TableCell>
-                              <TableCell className="text-muted-foreground text-sm">{order.area}</TableCell>
-                              <TableCell className="text-muted-foreground text-sm">{order.table}</TableCell>
-                              <TableCell className="text-muted-foreground text-sm">{order.employee}</TableCell>
-                              <TableCell className="text-right text-sm">{formatCurrency(order.subtotal)}</TableCell>
-                              <TableCell className="text-right text-muted-foreground text-sm">{formatCurrency(order.discount)}</TableCell>
-                              <TableCell className="text-right text-purple-600 text-sm">{formatCurrency(order.complimentary)}</TableCell>
-                              <TableCell className="text-right text-muted-foreground text-sm">{formatCurrency(order.tax)}</TableCell>
-                              <TableCell className="text-right text-amber-600 text-sm">{formatCurrency(order.cardSurcharge)}</TableCell>
-                              <TableCell className="text-right font-medium text-sm">{formatCurrency(order.total)}</TableCell>
-                              <TableCell>
-                                <Badge
-                                  className={cn(
-                                    "text-xs",
-                                    order.status === "paid"
-                                      ? "bg-success/20 text-success border-success/30"
-                                      : "bg-warning/20 text-warning border-warning/30"
-                                  )}
-                                >
-                                  {order.status}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="text-muted-foreground text-sm">{order.time}</TableCell>
-                            </TableRow>
-                          ))
-                        : [];
-                    return [parent, ...children];
-                  })
+                        >
+                          {order.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{order.time}</TableCell>
+                    </TableRow>
+                  ))
                 )}
                 {!loadingSales && salesList.length > 0 && (
                   <TableRow className="bg-muted/40 font-semibold">
-                    <TableCell colSpan={5}>TOTAL</TableCell>
+                    <TableCell colSpan={4}>TOTAL</TableCell>
                     <TableCell className="text-right">{formatCurrency(salesList.reduce((s, o) => s + o.subtotal, 0))}</TableCell>
                     <TableCell className="text-right">{formatCurrency(salesSummary.totalDiscounts)}</TableCell>
                     <TableCell className="text-right">{formatCurrency(salesSummary.totalComplimentary)}</TableCell>
@@ -1292,7 +1177,7 @@ export default function Reports() {
               icon={<DollarSign className="w-5 h-5" />}
             />
             <StatCard
-              label="Total LD"
+              label="Total LD (incl. open)"
               value={payrollSummary.totalLd}
               icon={<ShoppingBag className="w-5 h-5" />}
             />
@@ -1309,15 +1194,15 @@ export default function Reports() {
           </div>
 
           <div className="rounded-lg border border-border overflow-hidden">
-          <Table wrapperClassName="max-h-[500px] overflow-y-auto overflow-x-auto">
+          <Table wrapperClassName="max-h-[500px]">
             <TableHeader>
-              <TableRow className="border-b [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:bg-muted [&>th]:shadow-[0_1px_0_0_hsl(var(--border))]">
+              <TableRow className={tableStickyHeaderRowClassName}>
                 <TableHead className="whitespace-nowrap">Employee</TableHead>
                 <TableHead className="whitespace-nowrap">Employee ID</TableHead>
                 <TableHead className="whitespace-nowrap">Time In</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Budget</TableHead>
-                <TableHead className="text-center whitespace-nowrap">Total LD</TableHead>
-                <TableHead className="text-right whitespace-nowrap">Total LD Commission</TableHead>
+                <TableHead className="text-center whitespace-nowrap">Total LD (incl. open)</TableHead>
+                <TableHead className="text-right whitespace-nowrap">LD comm. (paid)</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Incentives</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Other Incentives</TableHead>
                 <TableHead className="text-right whitespace-nowrap">Adjustments</TableHead>
@@ -1399,9 +1284,9 @@ export default function Reports() {
 
               {/* Items list */}
               <div className="rounded-lg border overflow-hidden">
-                <Table>
+                <Table wrapperClassName="max-h-[min(50vh,360px)]">
                   <TableHeader>
-                    <TableRow className="bg-muted/60">
+                    <TableRow className={tableStickyHeaderRowClassName}>
                       <TableHead>Item</TableHead>
                       <TableHead className="text-center w-16">Qty</TableHead>
                       <TableHead className="text-right w-24">Unit Price</TableHead>

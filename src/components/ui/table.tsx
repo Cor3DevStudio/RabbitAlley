@@ -2,6 +2,10 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+/** Apply to the header `TableRow` inside `TableHeader`. Use with `<Table wrapperClassName="max-h-[…]">` so column labels stay visible while scrolling. */
+export const tableStickyHeaderRowClassName =
+  "border-b border-border bg-muted/95 hover:bg-muted/95 [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:bg-muted/95 [&>th]:backdrop-blur-sm";
+
 const Table = React.forwardRef<
   HTMLTableElement,
   React.HTMLAttributes<HTMLTableElement> & { wrapperClassName?: string }

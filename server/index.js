@@ -2592,9 +2592,10 @@ app.get("/api/reports/payroll", async (req, res) => {
       try { return Array.isArray(typeof v === "string" ? JSON.parse(v) : v) ? (typeof v === "string" ? JSON.parse(v) : v) : null; } catch (_) { return null; }
     };
     // Get LD drink count (quantity) AND total sales amount per staff for this period
+    // Attribute LD lines to staff: served_by when set, else order opener (pending tabs often omit served_by)
     const ldCountRows = await queryWithVoidFallback(
       db,
-      `SELECT oi.served_by AS userId,
+      `SELECT COALESCE(oi.served_by, o.employee_id) AS userId,
               SUM(oi.quantity) AS ldCount,
               SUM(oi.subtotal) AS ldAmount
        FROM order_items oi
@@ -2602,25 +2603,75 @@ app.get("/api/reports/payroll", async (req, res) => {
        WHERE o.branch_id = ? AND oi.department = 'LD'
          AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
          AND COALESCE(oi.is_voided,0) = 0
-       GROUP BY oi.served_by`,
-      `SELECT oi.served_by AS userId,
+       GROUP BY COALESCE(oi.served_by, o.employee_id)`,
+      `SELECT COALESCE(oi.served_by, o.employee_id) AS userId,
               SUM(oi.quantity) AS ldCount,
               SUM(oi.subtotal) AS ldAmount
        FROM order_items oi
        JOIN orders o ON o.id = oi.order_id
        WHERE o.branch_id = ? AND oi.department = 'LD'
          AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
-       GROUP BY oi.served_by`,
+       GROUP BY COALESCE(oi.served_by, o.employee_id)`,
+      [branchId, fromDate, toDate]
+    );
+    // Includes open (pending) orders — same attribution as paid
+    const ldCountRealtimeRows = await queryWithVoidFallback(
+      db,
+      `SELECT COALESCE(oi.served_by, o.employee_id) AS userId,
+              SUM(oi.quantity) AS ldCountRealtime
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status IN ('pending','paid')
+         AND COALESCE(oi.is_voided,0) = 0
+       GROUP BY COALESCE(oi.served_by, o.employee_id)`,
+      `SELECT COALESCE(oi.served_by, o.employee_id) AS userId,
+              SUM(oi.quantity) AS ldCountRealtime
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status IN ('pending','paid')
+       GROUP BY COALESCE(oi.served_by, o.employee_id)`,
+      [branchId, fromDate, toDate]
+    );
+    // Branch-wide qty (every LD line, including unassigned served_by/employee)
+    const ldQtyAggRows = await queryWithVoidFallback(
+      db,
+      `SELECT COALESCE(SUM(CASE WHEN o.status = 'paid' THEN oi.quantity ELSE 0 END), 0) AS totalLdQtyPaid,
+              COALESCE(SUM(oi.quantity), 0) AS totalLdQtyRealtime
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status IN ('pending','paid')
+         AND COALESCE(oi.is_voided,0) = 0`,
+      `SELECT COALESCE(SUM(CASE WHEN o.status = 'paid' THEN oi.quantity ELSE 0 END), 0) AS totalLdQtyPaid,
+              COALESCE(SUM(oi.quantity), 0) AS totalLdQtyRealtime
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.branch_id = ? AND oi.department = 'LD'
+         AND o.order_date BETWEEN ? AND ? AND o.status IN ('pending','paid')`,
       [branchId, fromDate, toDate]
     );
     const ldCountMap = {};
     const ldAmountMap = {};
+    const ldCountRealtimeMap = {};
+    const pickNum = (row, camel, snake) => Number(row?.[camel] ?? row?.[snake] ?? 0);
     for (const r of (ldCountRows || [])) {
-      if (r.userId) {
-        ldCountMap[String(r.userId)] = Number(r.ldCount || 0);
-        ldAmountMap[String(r.userId)] = Number(r.ldAmount || 0);
+      const uid = r.userId ?? r.user_id;
+      if (uid != null && uid !== "") {
+        ldCountMap[String(uid)] = pickNum(r, "ldCount", "ldcount");
+        ldAmountMap[String(uid)] = pickNum(r, "ldAmount", "ldamount");
       }
     }
+    for (const r of (ldCountRealtimeRows || [])) {
+      const uid = r.userId ?? r.user_id;
+      if (uid != null && uid !== "") {
+        ldCountRealtimeMap[String(uid)] = pickNum(r, "ldCountRealtime", "ldcountrealtime");
+      }
+    }
+    const agg0 = (ldQtyAggRows && ldQtyAggRows[0]) || {};
+    const totalLdQtyPaid = pickNum(agg0, "totalLdQtyPaid", "totalldqtypaid");
+    const totalLdQtyRealtime = pickNum(agg0, "totalLdQtyRealtime", "totalldqtyrealtime");
     const userIds = rows.map((r) => r.userId).filter(Boolean);
     let timeInMap = {};
     if (userIds.length > 0) {
@@ -2658,6 +2709,7 @@ app.get("/api/reports/payroll", async (req, res) => {
         hours: 0,
         commission,
         ldCount: ldCountMap[String(r.userId)] ?? 0,
+        ldCountRealtime: ldCountRealtimeMap[String(r.userId)] ?? 0,
         ldAmount: ldAmountMap[String(r.userId)] ?? 0,
         incentives,
         adjustments,
@@ -2671,7 +2723,11 @@ app.get("/api/reports/payroll", async (req, res) => {
         approvedBy: r.approvedBy || null,
       };
     };
-    res.json(rows.map(mapRow));
+    res.json({
+      rows: rows.map(mapRow),
+      totalLdQtyPaid,
+      totalLdQtyRealtime,
+    });
   } catch (err) {
     if (err.code === "ER_BAD_FIELD_ERROR") {
       try {
@@ -2684,14 +2740,18 @@ app.get("/api/reports/payroll", async (req, res) => {
            WHERE p.period_from >= ? AND p.period_to <= ? ORDER BY p.id`,
           [branchId, fromDate, toDate]
         );
-        return res.json(rows.map((r) => ({
-          id: String(r.id), userId: String(r.userId), employeeId: r.employeeId, name: r.name,
-          defaultAllowance: Number(r.defaultAllowance ?? 0), perHour: 0,
-          allowance: Number(r.allowance), hours: 0, commission: Number(r.commission),
-          incentives: Number(r.incentives ?? 0), adjustments: 0, deductions: 0,
-          incentivesBreakdown: null, adjustmentsBreakdown: null, deductionsBreakdown: null,
-          total: Number(r.total), netPayout: Number(r.allowance) + Number(r.commission) + Number(r.incentives ?? 0), status: r.status, approvedBy: null,
-        })));
+        return res.json({
+          rows: rows.map((r) => ({
+            id: String(r.id), userId: String(r.userId), employeeId: r.employeeId, name: r.name,
+            defaultAllowance: Number(r.defaultAllowance ?? 0), perHour: 0,
+            allowance: Number(r.allowance), hours: 0, commission: Number(r.commission),
+            incentives: Number(r.incentives ?? 0), adjustments: 0, deductions: 0,
+            incentivesBreakdown: null, adjustmentsBreakdown: null, deductionsBreakdown: null,
+            total: Number(r.total), netPayout: Number(r.allowance) + Number(r.commission) + Number(r.incentives ?? 0), status: r.status, approvedBy: null,
+          })),
+          totalLdQtyPaid: 0,
+          totalLdQtyRealtime: 0,
+        });
       } catch (e) {
         console.error("Payroll report error:", e);
         return res.status(500).json({ error: "Failed to load payroll report" });
@@ -2897,16 +2957,18 @@ app.post("/api/reports/payroll/compute", async (req, res) => {
                 COALESCE(SUM(oi.subtotal),0) AS ldAmount
          FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
-         WHERE o.branch_id = ? AND oi.served_by = ? AND oi.department = 'LD'
+         WHERE o.branch_id = ? AND oi.department = 'LD'
            AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
-           AND COALESCE(oi.is_voided,0) = 0`,
+           AND COALESCE(oi.is_voided,0) = 0
+           AND COALESCE(oi.served_by, o.employee_id) = ?`,
         `SELECT COALESCE(SUM(oi.quantity),0) AS ldCount,
                 COALESCE(SUM(oi.subtotal),0) AS ldAmount
          FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
-         WHERE o.branch_id = ? AND oi.served_by = ? AND oi.department = 'LD'
-           AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'`,
-        [branchId, staff.id, fromDate, toDate]
+         WHERE o.branch_id = ? AND oi.department = 'LD'
+           AND o.order_date BETWEEN ? AND ? AND o.status = 'paid'
+           AND COALESCE(oi.served_by, o.employee_id) = ?`,
+        [branchId, fromDate, toDate, staff.id]
       );
 
       const ldCount = Number(ldRows[0]?.ldCount || 0);

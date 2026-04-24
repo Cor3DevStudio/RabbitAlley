@@ -18,6 +18,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  tableStickyHeaderRowClassName,
 } from "@/components/ui/table";
 import {
   Dialog,
@@ -384,10 +385,10 @@ export default function Staff() {
         </Select>
       </div>
 
-      <div className="rounded-lg border border-border overflow-hidden max-h-[650px] overflow-y-auto">
-        <Table>
-          <TableHeader className="sticky top-0 bg-muted/95 z-10">
-            <TableRow>
+      <div className="rounded-lg border border-border overflow-hidden">
+        <Table wrapperClassName="max-h-[650px]">
+          <TableHeader>
+            <TableRow className={tableStickyHeaderRowClassName}>
               <TableHead>Code</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Nickname</TableHead>

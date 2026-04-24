@@ -10,7 +10,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  tableStickyHeaderRowClassName,
+} from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -496,10 +504,10 @@ export default function Shifts() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="max-h-[400px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-muted/95 z-10">
-                  <TableRow>
+            <div className="rounded-md border overflow-hidden">
+              <Table wrapperClassName="max-h-[400px]">
+                <TableHeader>
+                  <TableRow className={tableStickyHeaderRowClassName}>
                     <TableHead>Date</TableHead>
                     <TableHead>Cashier</TableHead>
                     <TableHead>Start</TableHead>

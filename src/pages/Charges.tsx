@@ -10,6 +10,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  tableStickyHeaderRowClassName,
 } from "@/components/ui/table";
 import {
   Select,
@@ -157,76 +158,74 @@ export default function Charges() {
       </div>
 
       <div className="rounded-lg border bg-card overflow-hidden">
-        <div className="max-h-[500px] overflow-y-auto">
-          <Table>
-            <TableHeader>
+        <Table wrapperClassName="max-h-[500px]">
+          <TableHeader>
+            <TableRow className={tableStickyHeaderRowClassName}>
+              <TableHead>Date</TableHead>
+              <TableHead>Customer</TableHead>
+              <TableHead className="text-right">Amount</TableHead>
+              <TableHead>Order(s)</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
               <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Order(s)</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                  Loading...
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    Loading...
+            ) : charges.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                  No charges found. Search by name or adjust date range.
+                </TableCell>
+              </TableRow>
+            ) : (
+              charges.map((c) => (
+                <TableRow key={c.id}>
+                  <TableCell className="whitespace-nowrap">{formatDate(c.chargedAt)}</TableCell>
+                  <TableCell className="font-medium">{c.customerName}</TableCell>
+                  <TableCell className="text-right font-mono">{formatCurrency(c.amount)}</TableCell>
+                  <TableCell className="text-muted-foreground text-sm">
+                    {c.orderIds ? c.orderIds.split(",").map((id) => `#${id.trim()}`).join(", ") : "-"}
+                  </TableCell>
+                  <TableCell>
+                    {c.status === "paid" ? (
+                      <Badge variant="secondary" className="bg-green-500/20 text-green-700 dark:text-green-400">
+                        Paid{c.paidAt ? ` ${new Date(c.paidAt).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary" className="bg-amber-500/20 text-amber-700 dark:text-amber-400">
+                        Not Yet
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {c.status === "pending" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleMarkPaid(c)}
+                        disabled={markingPaid === c.id}
+                      >
+                        {markingPaid === c.id ? (
+                          <span className="animate-pulse">...</span>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4 mr-1" />
+                            Mark Paid
+                          </>
+                        )}
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
-              ) : charges.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    No charges found. Search by name or adjust date range.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                charges.map((c) => (
-                  <TableRow key={c.id}>
-                    <TableCell className="whitespace-nowrap">{formatDate(c.chargedAt)}</TableCell>
-                    <TableCell className="font-medium">{c.customerName}</TableCell>
-                    <TableCell className="text-right font-mono">{formatCurrency(c.amount)}</TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {c.orderIds ? c.orderIds.split(",").map((id) => `#${id.trim()}`).join(", ") : "-"}
-                    </TableCell>
-                    <TableCell>
-                      {c.status === "paid" ? (
-                        <Badge variant="secondary" className="bg-green-500/20 text-green-700 dark:text-green-400">
-                          Paid{c.paidAt ? ` ${new Date(c.paidAt).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}` : ""}
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary" className="bg-amber-500/20 text-amber-700 dark:text-amber-400">
-                          Not Yet
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {c.status === "pending" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleMarkPaid(c)}
-                          disabled={markingPaid === c.id}
-                        >
-                          {markingPaid === c.id ? (
-                            <span className="animate-pulse">...</span>
-                          ) : (
-                            <>
-                              <CheckCircle className="w-4 h-4 mr-1" />
-                              Mark Paid
-                            </>
-                          )}
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
+              ))
+            )}
+          </TableBody>
+        </Table>
       </div>
     </AppLayout>
   );

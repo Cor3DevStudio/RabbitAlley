@@ -18,6 +18,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  tableStickyHeaderRowClassName,
 } from "@/components/ui/table";
 import {
   Dialog,
@@ -316,9 +317,9 @@ export default function Discounts() {
       </div>
 
       <div className="rounded-lg border border-border overflow-hidden">
-        <Table>
+        <Table wrapperClassName="max-h-[650px]">
           <TableHeader>
-            <TableRow className="bg-muted/50">
+            <TableRow className={tableStickyHeaderRowClassName}>
               <TableHead>Name</TableHead>
               <TableHead>Category</TableHead>
               <TableHead>Type</TableHead>
