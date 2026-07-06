@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect fill="#000000" width="24" height="24" rx="4"/>
+  <g stroke="#ffffff" fill="none">
+    <!-- Rabbit ears -->
+    <path d="M15 3C15 3 16 6 16 8C16 10 15.5 11 15.5 11"/>
+    <path d="M9 3C9 3 8 6 8 8C8 10 8.5 11 8.5 11"/>
+    <!-- Rabbit head -->
+    <circle cx="12" cy="13" r="5"/>
+    <!-- Eyes -->
+    <circle cx="10" cy="12" r="0.5" fill="#ffffff"/>
+    <circle cx="14" cy="12" r="0.5" fill="#ffffff"/>
+    <!-- Nose -->
+    <circle cx="12" cy="14" r="0.75" fill="#ffffff"/>
+    <!-- Mouth -->
+    <path d="M10.5 15.5C10.5 15.5 12 16.5 13.5 15.5"/>
+  </g>
+</svg>
