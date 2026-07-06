@@ -54,6 +54,129 @@ export async function getOpenSession(db, branchId, tableId) {
   return rows[0] || null;
 }
 
+function normalizeEmployeeId(employeeId) {
+  return String(employeeId || "").trim().toUpperCase();
+}
+
+async function getWaiterDisplayName(db, branchId, employeeId) {
+  const emp = normalizeEmployeeId(employeeId);
+  if (!emp) return null;
+  const [rows] = await db.execute(
+    `SELECT COALESCE(NULLIF(TRIM(nickname), ''), name) AS displayName
+     FROM users WHERE branch_id = ? AND UPPER(employee_id) = ? AND active = 1 LIMIT 1`,
+    [branchId, emp]
+  );
+  return rows[0]?.displayName || null;
+}
+
+async function throwTableInUseByOther(db, branchId, ownerEmployeeId) {
+  const name = await getWaiterDisplayName(db, branchId, ownerEmployeeId);
+  const err = new Error(
+    name ? `This table is being handled by ${name}.` : "This table is in use by another waiter."
+  );
+  err.status = 403;
+  throw err;
+}
+
+/**
+ * Floor waiter opens a table: create or attach to the open session.
+ * Blocks if another waiter's session or pending orders own this table.
+ */
+export async function claimTableForWaiter(db, branchId, tableId, employeeId) {
+  const emp = normalizeEmployeeId(employeeId);
+  if (!emp) {
+    const err = new Error("Employee ID required");
+    err.status = 400;
+    throw err;
+  }
+
+  const session = await getOpenSession(db, branchId, tableId);
+  if (session) {
+    const owner = normalizeEmployeeId(session.waiter_id);
+    if (owner && owner !== emp) {
+      await throwTableInUseByOther(db, branchId, owner);
+    }
+    if (!owner) {
+      await db.execute(`UPDATE table_sessions SET waiter_id = ? WHERE id = ?`, [emp, session.id]);
+    }
+    return Number(session.id);
+  }
+
+  let pending;
+  try {
+    [pending] = await db.execute(
+      `SELECT employee_id FROM orders
+       WHERE branch_id = ? AND table_id = ? AND status = 'pending' AND voided_at IS NULL
+       ORDER BY id LIMIT 1`,
+      [branchId, tableId]
+    );
+  } catch (e) {
+    if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+    [pending] = await db.execute(
+      `SELECT employee_id FROM orders
+       WHERE branch_id = ? AND table_id = ? AND status = 'pending'
+       ORDER BY id LIMIT 1`,
+      [branchId, tableId]
+    );
+  }
+  if (pending.length) {
+    const orderEmp = normalizeEmployeeId(pending[0].employee_id);
+    if (orderEmp && orderEmp !== emp) {
+      await throwTableInUseByOther(db, branchId, orderEmp);
+    }
+  }
+
+  return openSession(db, { branchId, tableId, waiterId: emp });
+}
+
+/** Verify the waiter still owns this table (session or pending orders). */
+export async function assertWaiterOwnsTable(db, branchId, tableId, employeeId) {
+  const emp = normalizeEmployeeId(employeeId);
+  if (!emp) {
+    const err = new Error("Employee ID required");
+    err.status = 400;
+    throw err;
+  }
+
+  const session = await getOpenSession(db, branchId, tableId);
+  if (session) {
+    const owner = normalizeEmployeeId(session.waiter_id);
+    if (owner && owner !== emp) {
+      await throwTableInUseByOther(db, branchId, owner);
+    }
+    return;
+  }
+
+  let pending;
+  try {
+    [pending] = await db.execute(
+      `SELECT employee_id FROM orders
+       WHERE branch_id = ? AND table_id = ? AND status = 'pending' AND voided_at IS NULL
+       LIMIT 1`,
+      [branchId, tableId]
+    );
+  } catch (e) {
+    if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+    [pending] = await db.execute(
+      `SELECT employee_id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending' LIMIT 1`,
+      [branchId, tableId]
+    );
+  }
+  if (pending.length) {
+    const orderEmp = normalizeEmployeeId(pending[0].employee_id);
+    if (orderEmp && orderEmp !== emp) {
+      await throwTableInUseByOther(db, branchId, orderEmp);
+    }
+  }
+}
+
+/** Floor waiters take orders; cashiers/managers open any table for payment. */
+export function isFloorWaiter(authUser) {
+  if (!authUser?.permissions) return false;
+  const perms = authUser.permissions;
+  return perms.includes("create_orders") && !perms.includes("accept_payments");
+}
+
 /** Open a new session for a fresh seating (table was available). */
 export async function openSession(db, { branchId, tableId, waiterId = null }) {
   const [result] = await db.execute(

@@ -3,6 +3,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { TableGrid } from "@/components/dashboard/TableGrid";
 import { useAuth } from "@/contexts/AuthContext";
+import { isFloorWaiter } from "@/lib/floorStaff";
 import { api } from "@/lib/api";
 import { mapApiTable } from "@/types/pos";
 import type { Table } from "@/types/pos";
@@ -23,16 +24,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, ArrowRightLeft, ArrowRight, TableProperties } from "lucide-react";
+import { Plus, ArrowRightLeft, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 export default function POS() {
   const { hasPermission, user } = useAuth();
-  const isWaiter = String(user?.role ?? "").toLowerCase() === "staff";
+  const floorWaiter = isFloorWaiter(hasPermission);
   const canAddTable = hasPermission("manage_settings");
   const canMergeTables = hasPermission("transfer_table_orders") || hasPermission("manage_settings");
   const [tables, setTables] = useState<Table[]>([]);
-  const [noAssignments, setNoAssignments] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addTableOpen, setAddTableOpen] = useState(false);
@@ -59,20 +59,9 @@ export default function POS() {
   const loadTables = async () => {
     setLoading(true);
     setError(null);
-    setNoAssignments(false);
     try {
-      if (isWaiter) {
-        const assigned = await api.assignments.getMyTables();
-        if (assigned.length === 0) {
-          setNoAssignments(true);
-          setTables([]);
-        } else {
-          setTables(assigned.map(mapApiTable));
-        }
-      } else {
-        const tablesRes = await api.dashboard.tables();
-        setTables(tablesRes.map(mapApiTable));
-      }
+      const tablesRes = await api.dashboard.tables();
+      setTables(tablesRes.map(mapApiTable));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load tables");
     } finally {
@@ -285,18 +274,6 @@ export default function POS() {
             </div>
           ))}
         </div>
-      ) : noAssignments ? (
-        <div className="flex flex-col items-center justify-center py-24 gap-5 text-center">
-          <div className="flex items-center justify-center w-20 h-20 rounded-full bg-muted">
-            <TableProperties className="w-10 h-10 text-muted-foreground" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-xl font-semibold">No Tables Assigned</h2>
-            <p className="text-muted-foreground max-w-sm">
-              You don't have any tables assigned yet. Please ask your Manager to assign you to a table.
-            </p>
-          </div>
-        </div>
       ) : (
         <TableGrid
           tables={tables}
@@ -304,6 +281,8 @@ export default function POS() {
           showTableActions={canAddTable}
           onEditTable={canAddTable ? openEditTable : undefined}
           onDeleteTable={canAddTable ? handleDeleteTable : undefined}
+          viewerEmployeeId={user?.employeeId}
+          enforceTableLock={floorWaiter}
         />
       )}
 

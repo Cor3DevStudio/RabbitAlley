@@ -17,7 +17,6 @@ import {
   LogIn,
   ClipboardList,
   Receipt,
-  TableProperties
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -36,7 +35,6 @@ const navItems: NavItem[] = [
   { label: "Point of Sale", icon: ShoppingCart, href: "/pos", permission: "manage_pos" },
   { label: "Products", icon: Package, href: "/products", permission: "manage_products" },
   { label: "Staff", icon: Users, href: "/staff", permission: "manage_staff" },
-  { label: "Table Assignments", icon: TableProperties, href: "/table-assignments", permission: "manage_staff" },
   { label: "Discounts", icon: Percent, href: "/discounts", permission: "view_discounts" },
   { label: "Reports", icon: FileText, href: "/reports", permission: "view_reports" },
   { label: "Audit Logs", icon: ClipboardList, href: "/audit-logs", permission: "view_audit_logs" },

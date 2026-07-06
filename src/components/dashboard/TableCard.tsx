@@ -3,6 +3,7 @@ import { Table } from "@/types/pos";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 interface TableCardProps {
   table: Table;
@@ -10,10 +11,42 @@ interface TableCardProps {
   onEdit?: (table: Table) => void;
   onDelete?: (table: Table) => void;
   showActions?: boolean;
+  /** Current user's employee ID — used to block other waiters' locked tables. */
+  viewerEmployeeId?: string;
+  /** When true, tables locked to another waiter cannot be opened. */
+  enforceTableLock?: boolean;
 }
 
-export function TableCard({ table, linkTo, onEdit, onDelete, showActions }: TableCardProps) {
-  const isAvailable = table.status === "available";
+function isLockedToOther(
+  table: Table,
+  viewerEmployeeId: string | undefined,
+  enforceTableLock: boolean
+): boolean {
+  if (!enforceTableLock || !table.lockedByEmployeeId) return false;
+  if (!viewerEmployeeId) return true;
+  return table.lockedByEmployeeId.toUpperCase() !== viewerEmployeeId.toUpperCase();
+}
+
+export function TableCard({
+  table,
+  linkTo,
+  onEdit,
+  onDelete,
+  showActions,
+  viewerEmployeeId,
+  enforceTableLock = false,
+}: TableCardProps) {
+  const blocked = isLockedToOther(table, viewerEmployeeId, enforceTableLock);
+  const inUse = table.status === "occupied" || !!table.lockedByEmployeeId;
+  const isAvailable = !inUse;
+
+  const handleBlockedClick = () => {
+    toast.error(
+      table.lockedByName
+        ? `This table is being handled by ${table.lockedByName}.`
+        : "This table is in use by another waiter."
+    );
+  };
 
   const cardContent = (
     <>
@@ -27,11 +60,13 @@ export function TableCard({ table, linkTo, onEdit, onDelete, showActions }: Tabl
               : "bg-destructive/20 text-destructive"
           )}
         >
-          {isAvailable ? "Available" : "Occupied"}
+          {isAvailable ? "Available" : "In use"}
         </span>
       </div>
       <div className="min-h-[1.25rem] mt-1 text-xs text-muted-foreground">
-        {!isAvailable && table.currentOrderId ? (
+        {table.lockedByName ? (
+          <>Server: {table.lockedByName}</>
+        ) : !isAvailable && table.currentOrderId ? (
           <>Order: {table.currentOrderId}</>
         ) : (
           <span className="invisible" aria-hidden>—</span>
@@ -78,11 +113,20 @@ export function TableCard({ table, linkTo, onEdit, onDelete, showActions }: Tabl
 
   const wrapperClass = cn(
     "group relative p-4 rounded-lg border-2 transition-all duration-200 min-h-[88px] flex flex-col justify-between",
-    isAvailable
-      ? "border-success/40 bg-success/5 hover:border-success hover:bg-success/10"
-      : "border-destructive/40 bg-destructive/5 hover:border-destructive hover:bg-destructive/10",
-    linkTo && "cursor-pointer"
+    blocked
+      ? "border-border bg-muted/30 opacity-70 cursor-not-allowed"
+      : isAvailable
+        ? "border-border hover:border-primary/50 hover:bg-muted/30 cursor-pointer"
+        : "border-destructive/30 bg-destructive/5 hover:border-destructive/50 cursor-pointer"
   );
+
+  if (blocked) {
+    return (
+      <button type="button" className={cn(wrapperClass, "w-full text-left")} onClick={handleBlockedClick}>
+        {cardContent}
+      </button>
+    );
+  }
 
   if (linkTo) {
     return (

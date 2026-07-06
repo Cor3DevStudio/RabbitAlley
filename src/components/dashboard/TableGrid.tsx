@@ -9,9 +9,20 @@ interface TableGridProps {
   onEditTable?: (table: Table) => void;
   onDeleteTable?: (table: Table) => void;
   displayAreas?: readonly string[];
+  viewerEmployeeId?: string;
+  enforceTableLock?: boolean;
 }
 
-export function TableGrid({ tables, linkPrefix = "/pos/table", showTableActions, onEditTable, onDeleteTable, displayAreas }: TableGridProps) {
+export function TableGrid({
+  tables,
+  linkPrefix = "/pos/table",
+  showTableActions,
+  onEditTable,
+  onDeleteTable,
+  displayAreas,
+  viewerEmployeeId,
+  enforceTableLock,
+}: TableGridProps) {
   const areasToShow = displayAreas ?? areas;
   const tablesByArea = areasToShow.reduce((acc, area) => {
     acc[area] = tables.filter((t) => t.area === area);
@@ -25,7 +36,7 @@ export function TableGrid({ tables, linkPrefix = "/pos/table", showTableActions,
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-lg">{area}</h3>
             <span className="text-sm text-muted-foreground">
-              {tablesByArea[area].filter((t) => t.status === "available").length} / {tablesByArea[area].length} available
+              {tablesByArea[area].filter((t) => t.status === "available" && !t.lockedByEmployeeId).length} / {tablesByArea[area].length} available
             </span>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -37,6 +48,8 @@ export function TableGrid({ tables, linkPrefix = "/pos/table", showTableActions,
                 showActions={showTableActions}
                 onEdit={onEditTable}
                 onDelete={onDeleteTable}
+                viewerEmployeeId={viewerEmployeeId}
+                enforceTableLock={enforceTableLock}
               />
             ))}
           </div>

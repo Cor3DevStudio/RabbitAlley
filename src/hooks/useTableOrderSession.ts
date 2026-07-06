@@ -51,6 +51,7 @@ function tabsFromOrders(orders: Array<Parameters<typeof mapApiOrderToTab>[0]>): 
 export function useTableOrderSession(tableId: string | undefined) {
   const [table, setTable] = useState<Table | null>(null);
   const [tablesLoading, setTablesLoading] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [orderTabs, setOrderTabs] = useState<OrderTab[]>([{ id: null, items: [], sent: false }]);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
 
@@ -58,16 +59,20 @@ export function useTableOrderSession(tableId: string | undefined) {
     setTable(session.table);
     setOrderTabs(tabsFromOrders(session.orders));
     setActiveTabIndex(0);
+    setSessionError(null);
   }, []);
 
   useEffect(() => {
     if (!tableId) {
       setTablesLoading(false);
       setTable(null);
+      setSessionError(null);
       return;
     }
     let cancelled = false;
     (async () => {
+      setTablesLoading(true);
+      setSessionError(null);
       try {
         const session = await api.pos.tableSession(tableId);
         if (!cancelled) {
@@ -76,22 +81,11 @@ export function useTableOrderSession(tableId: string | undefined) {
             orders: session.orders,
           });
         }
-      } catch {
+      } catch (e) {
         if (!cancelled) {
-          try {
-            const tablesRes = await api.dashboard.tables();
-            const t = tablesRes.find((r) => r.id === tableId);
-            if (t) {
-              setTable(mapApiTable(t));
-              const orderData = await api.orders.getByTable(tableId);
-              setOrderTabs(tabsFromOrders(orderData.orders || []));
-              setActiveTabIndex(0);
-            } else {
-              setTable(null);
-            }
-          } catch {
-            setTable(null);
-          }
+          const err = e as Error & { status?: number };
+          setSessionError(err.message || "Failed to load table");
+          setTable(null);
         }
       } finally {
         if (!cancelled) setTablesLoading(false);
@@ -116,6 +110,7 @@ export function useTableOrderSession(tableId: string | undefined) {
     table,
     setTable,
     tablesLoading,
+    sessionError,
     orderTabs,
     setOrderTabs,
     activeTabIndex,

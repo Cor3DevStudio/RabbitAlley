@@ -44,6 +44,9 @@ import {
   migrateLegacySessions,
   attachOrderToSession,
   getOpenSession,
+  claimTableForWaiter,
+  assertWaiterOwnsTable,
+  isFloorWaiter,
 } from "./lib/tableSessions.js";
 import {
   ensureProductPricingSchema,
@@ -1390,109 +1393,34 @@ app.get("/api/dashboard/tables", requireAnyPermission("view_dashboard", "manage_
   try {
     const db = await getPool();
     const [rows] = await db.execute(
-      "SELECT id, name, area, status, current_order_id AS currentOrderId FROM pos_tables WHERE branch_id = ? ORDER BY area, name",
+      `SELECT pt.id, pt.name, pt.area, pt.status, pt.current_order_id AS currentOrderId,
+              ts.waiter_id AS lockedByEmployeeId,
+              COALESCE(NULLIF(TRIM(u.nickname), ''), u.name) AS lockedByName
+       FROM pos_tables pt
+       LEFT JOIN table_sessions ts
+         ON ts.branch_id = pt.branch_id AND ts.table_id = pt.id AND ts.status = 'open'
+       LEFT JOIN users u
+         ON u.branch_id = pt.branch_id AND UPPER(u.employee_id) = UPPER(ts.waiter_id)
+       WHERE pt.branch_id = ?
+       ORDER BY pt.area, pt.name`,
       [branchId]
     );
-    res.json(rows.map((r) => ({ ...r, id: r.id, currentOrderId: r.currentOrderId ?? undefined })));
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        id: r.id,
+        currentOrderId: r.currentOrderId ?? undefined,
+        lockedByEmployeeId: r.lockedByEmployeeId ?? undefined,
+        lockedByName: r.lockedByName ?? undefined,
+      }))
+    );
   } catch (err) {
     console.error("Dashboard tables error:", err);
     res.status(500).json({ error: "Failed to load tables" });
   }
 });
 
-// ---------- Waiter Table Assignments ----------
-
-/** GET /api/waiter/assigned-tables — tables assigned to the current logged-in waiter */
-app.get("/api/waiter/assigned-tables", requireAnyPermission("manage_pos", "create_orders", "view_orders"), async (req, res) => {
-  const branchId = getBranchId(req);
-  const userId = req.authUser?.id;
-  if (!userId) return res.status(401).json({ error: "Not authenticated" });
-  try {
-    const db = await getPool();
-    const [rows] = await db.execute(
-      `SELECT pt.id, pt.name, pt.area, pt.status, pt.current_order_id AS currentOrderId
-       FROM waiter_table_assignments wta
-       JOIN pos_tables pt ON pt.branch_id = wta.branch_id AND pt.id = wta.table_id
-       WHERE wta.branch_id = ? AND wta.user_id = ?
-       ORDER BY pt.area, pt.name`,
-      [branchId, userId]
-    );
-    res.json(rows.map((r) => ({ ...r, currentOrderId: r.currentOrderId ?? undefined })));
-  } catch (err) {
-    console.error("Waiter assigned tables error:", err);
-    res.status(500).json({ error: "Failed to load assigned tables" });
-  }
-});
-
-/** GET /api/manager/waiters — all Staff users with their assigned table IDs */
-app.get("/api/manager/waiters", requireAnyPermission("manage_staff"), async (req, res) => {
-  const branchId = getBranchId(req);
-  try {
-    const db = await getPool();
-    const [waiters] = await db.execute(
-      `SELECT u.id, u.employee_id AS code, u.name,
-              IF(u.active = 1, 'active', 'inactive') AS status
-       FROM users u
-       JOIN roles r ON r.id = u.role_id
-       WHERE u.branch_id = ? AND r.name = 'Staff' AND u.active = 1
-       ORDER BY u.name`,
-      [branchId]
-    );
-    const [assignments] = await db.execute(
-      `SELECT wta.user_id, wta.table_id, pt.name AS table_name, pt.area
-       FROM waiter_table_assignments wta
-       JOIN pos_tables pt ON pt.branch_id = wta.branch_id AND pt.id = wta.table_id
-       WHERE wta.branch_id = ?
-       ORDER BY pt.area, pt.name`,
-      [branchId]
-    );
-    const assignMap = {};
-    for (const a of assignments) {
-      if (!assignMap[a.user_id]) assignMap[a.user_id] = [];
-      assignMap[a.user_id].push({ tableId: a.table_id, tableName: a.table_name, area: a.area });
-    }
-    res.json(
-      waiters.map((w) => ({
-        id: String(w.id),
-        code: w.code,
-        name: w.name,
-        status: w.status,
-        assignedTables: assignMap[w.id] || [],
-      }))
-    );
-  } catch (err) {
-    console.error("Manager waiters error:", err);
-    res.status(500).json({ error: "Failed to load waiters" });
-  }
-});
-
-/** POST /api/manager/waiter-assignments — replace all assignments for a waiter */
-app.post("/api/manager/waiter-assignments", requireAnyPermission("manage_staff"), async (req, res) => {
-  const branchId = getBranchId(req);
-  const { waiterId, tableIds } = req.body || {};
-  if (!waiterId) return res.status(400).json({ error: "waiterId required" });
-  const ids = Array.isArray(tableIds) ? tableIds : [];
-  try {
-    const db = await getPool();
-    await db.execute(
-      "DELETE FROM waiter_table_assignments WHERE branch_id = ? AND user_id = ?",
-      [branchId, waiterId]
-    );
-    if (ids.length > 0) {
-      const placeholders = ids.map(() => "(?, ?, ?)").join(", ");
-      const values = ids.flatMap((tid) => [branchId, waiterId, tid]);
-      await db.execute(
-        `INSERT IGNORE INTO waiter_table_assignments (branch_id, user_id, table_id) VALUES ${placeholders}`,
-        values
-      );
-    }
-    res.json({ ok: true, assigned: ids.length });
-  } catch (err) {
-    console.error("Waiter assignment error:", err);
-    res.status(500).json({ error: "Failed to save assignments" });
-  }
-});
-
+// ---------- Orders ----------
 app.post("/api/dashboard/tables", requireAnyPermission("manage_settings"), async (req, res) => {
   const { name, area } = req.body || {};
   const branchId = getBranchId(req);
@@ -1582,6 +1510,9 @@ app.post("/api/orders", requireAnyPermission("create_orders", "manage_pos"), asy
   let conn;
   try {
     const db = await getPool();
+    if (isFloorWaiter(req.authUser)) {
+      await assertWaiterOwnsTable(db, branchId, tableId, req.authUser.employeeId);
+    }
     conn = await db.getConnection();
     await conn.beginTransaction();
     const orderDate = new Date().toISOString().slice(0, 10);
@@ -1678,6 +1609,7 @@ app.post("/api/orders", requireAnyPermission("create_orders", "manage_pos"), asy
     if (conn) {
       try { await conn.rollback(); } catch {}
     }
+    if (err.status === 403) return res.status(403).json({ error: err.message });
     console.error("Create order error:", err);
     res.status(500).json({ error: "Failed to create order" });
   } finally {
@@ -2241,6 +2173,9 @@ app.get("/api/pos/tables/:tableId/session", requireAnyPermission("view_orders", 
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
+    if (isFloorWaiter(req.authUser)) {
+      await claimTableForWaiter(db, branchId, tableId, req.authUser.employeeId);
+    }
     const [tableRows] = await db.execute(
       "SELECT id, name, area, status, current_order_id AS currentOrderId FROM pos_tables WHERE branch_id = ? AND id = ?",
       [branchId, tableId]
@@ -2265,6 +2200,7 @@ app.get("/api/pos/tables/:tableId/session", requireAnyPermission("view_orders", 
       tableStatus: orderList.length ? "occupied" : t.status,
     });
   } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message });
     console.error("Table session error:", err);
     res.status(500).json({ error: "Failed to load table session" });
   }

@@ -5,14 +5,15 @@ import { StatCard } from "@/components/dashboard/StatCard";
 import { TableGrid } from "@/components/dashboard/TableGrid";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { isFloorWaiter } from "@/lib/floorStaff";
 import { ShoppingBag, DollarSign, LayoutGrid, Clock } from "lucide-react";
 import { mapApiTable } from "@/types/pos";
 import type { Table } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
 
 export default function Dashboard() {
-  const { user } = useAuth();
-  const isWaiter = String(user?.role ?? "").toLowerCase() === "staff";
+  const { user, hasPermission } = useAuth();
+  const floorWaiter = isFloorWaiter(hasPermission);
 
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.dashboard.stats>> | null>(null);
   const [tables, setTables] = useState<Table[]>([]);
@@ -23,13 +24,13 @@ export default function Dashboard() {
     let cancelled = false;
     (async () => {
       try {
-        const requests: [Promise<typeof stats>, Promise<typeof tables>] = isWaiter
-          ? [api.dashboard.stats(), Promise.resolve([])]
-          : [api.dashboard.stats(), api.dashboard.tables().then((r) => r.map(mapApiTable))];
-        const [statsRes, tablesRes] = await Promise.all(requests);
+        const [statsRes, tablesRes] = await Promise.all([
+          api.dashboard.stats(),
+          api.dashboard.tables().then((r) => r.map(mapApiTable)),
+        ]);
         if (!cancelled) {
           setStats(statsRes);
-          setTables(tablesRes as Table[]);
+          setTables(tablesRes);
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -38,7 +39,7 @@ export default function Dashboard() {
       }
     })();
     return () => { cancelled = true; };
-  }, [isWaiter]);
+  }, []);
 
   if (error) {
     return (
@@ -51,8 +52,8 @@ export default function Dashboard() {
     );
   }
 
-  const salesCardLabel = isWaiter ? "LD Commissions" : "Today's Sales";
-  const salesCardValue = isWaiter
+  const salesCardLabel = floorWaiter ? "LD Commissions" : "Today's Sales";
+  const salesCardValue = floorWaiter
     ? formatCurrency(stats?.myLd?.ldCommission ?? 0)
     : formatCurrency(stats?.todaysSales ?? 0);
 
@@ -96,14 +97,16 @@ export default function Dashboard() {
             />
           </div>
 
-          {!isWaiter && (
-            <>
-              <div className="mb-4">
-                <h2 className="text-lg font-semibold mb-4">Table Overview</h2>
-              </div>
-              <TableGrid tables={tables} displayAreas={["Lounge", "Club"]} />
-            </>
-          )}
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold mb-4">Table Overview</h2>
+          </div>
+          <TableGrid
+            tables={tables}
+            displayAreas={["Lounge", "Club"]}
+            linkPrefix="/pos/table"
+            viewerEmployeeId={user?.employeeId}
+            enforceTableLock={floorWaiter}
+          />
         </>
       ) : null}
     </AppLayout>

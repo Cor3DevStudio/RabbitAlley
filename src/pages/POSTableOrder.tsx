@@ -42,6 +42,7 @@ export default function POSTableOrder() {
     table,
     setTable,
     tablesLoading,
+    sessionError,
     orderTabs,
     setOrderTabs,
     activeTabIndex,
@@ -712,6 +713,19 @@ export default function POSTableOrder() {
       <AppLayout>
         <div className="flex items-center justify-center py-12">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        </div>
+      </AppLayout>
+    );
+  }
+
+  if (sessionError) {
+    return (
+      <AppLayout>
+        <div className="text-center py-12 space-y-3">
+          <p className="text-muted-foreground">{sessionError}</p>
+          <Link to="/pos" className="text-primary hover:underline inline-block">
+            Back to Tables
+          </Link>
         </div>
       </AppLayout>
     );

@@ -6,6 +6,9 @@ export interface Table {
   area: "Lounge" | "Club" | "LD";
   status: "available" | "occupied";
   currentOrderId?: string;
+  /** Set when a floor waiter has opened/claimed this table (until payment). */
+  lockedByEmployeeId?: string;
+  lockedByName?: string;
 }
 
 export const areas = ["Lounge", "Club", "LD"] as const;
@@ -58,6 +61,8 @@ export function mapApiTable(t: {
   area: string;
   status: string;
   currentOrderId?: string;
+  lockedByEmployeeId?: string;
+  lockedByName?: string;
 }): Table {
   return {
     id: t.id,
@@ -65,5 +70,7 @@ export function mapApiTable(t: {
     area: t.area as Area,
     status: t.status as "available" | "occupied",
     currentOrderId: t.currentOrderId,
+    lockedByEmployeeId: t.lockedByEmployeeId,
+    lockedByName: t.lockedByName,
   };
 }

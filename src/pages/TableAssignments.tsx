@@ -119,7 +119,7 @@ export default function TableAssignments() {
     <AppLayout>
       <PageHeader
         title="Table Assignments"
-        description="Assign specific tables to each waiter. Waiters can only see and use their assigned tables."
+        description="Assign floor servers to tables. Each server only sees and can open their assigned tables on POS."
       />
 
       {error && (

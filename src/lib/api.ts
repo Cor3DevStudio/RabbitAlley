@@ -209,7 +209,18 @@ export const api = {
           incentiveRate: number;
         };
       }>("/api/dashboard/stats"),
-    tables: () => fetchApi<Array<{ id: string; name: string; area: string; status: string; currentOrderId?: string }>>("/api/dashboard/tables"),
+    tables: () =>
+      fetchApi<
+        Array<{
+          id: string;
+          name: string;
+          area: string;
+          status: string;
+          currentOrderId?: string;
+          lockedByEmployeeId?: string;
+          lockedByName?: string;
+        }>
+      >("/api/dashboard/tables"),
     createTable: (body: { name: string; area: string }) =>
       fetchApi<{ id: string; name: string; area: string; status: string; currentOrderId?: string }>("/api/dashboard/tables", { method: "POST", body: JSON.stringify(body) }),
     updateTable: (id: string, body: { name?: string; area?: string; status?: string }) =>
