@@ -8,6 +8,7 @@ import { useTableOrderSession, type OrderTab } from "@/hooks/useTableOrderSessio
 import { getPrinterForJob, deptToPrintJobType, PRINT_JOB_LABELS } from "@/lib/storage-keys";
 import { isQzTrayEnabled, qzPrintRawBase64 } from "@/lib/qzTray";
 import { getPosSettings } from "@/lib/posSettings";
+import { isFloorWaiter } from "@/lib/floorStaff";
 import {
   loadPendingBillAdjustments,
   savePendingBillAdjustments,
@@ -38,6 +39,7 @@ export default function POSTableOrder() {
   const { tableId } = useParams<{ tableId: string }>();
   const navigate = useNavigate();
   const { user, hasPermission, logout } = useAuth();
+  const floorWaiter = isFloorWaiter(hasPermission);
   const {
     table,
     setTable,
@@ -48,7 +50,7 @@ export default function POSTableOrder() {
     activeTabIndex,
     setActiveTabIndex,
     refetchOrders,
-  } = useTableOrderSession(tableId);
+  } = useTableOrderSession(tableId, { releaseOnLeave: floorWaiter });
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("");
@@ -490,6 +492,15 @@ export default function POSTableOrder() {
         if (!original || /^reprint$/i.test(String(original))) return "—";
         return String(original).toUpperCase();
       })();
+      const receiptChange = Math.max(
+        0,
+        Number(
+          receipt.change != null
+            ? receipt.change
+            : Number(receipt.amountPaid || 0) - Number(receipt.total || 0)
+        )
+      );
+      const showChange = /^CASH$/i.test(paymentDisplay) || receiptChange > 0;
 
       const html = `
       <!DOCTYPE html>
@@ -584,7 +595,7 @@ export default function POSTableOrder() {
         <div class="line"></div>
         <div class="row"><span class="lbl">Payment:</span><span class="val">${paymentDisplay}</span></div>
         <div class="row"><span class="lbl">Amount Paid:</span><span class="val">₱${receipt.amountPaid.toFixed(2)}</span></div>
-        <div class="row"><span class="lbl">Change:</span><span class="val">₱${Number(receipt.change || 0).toFixed(2)}</span></div>
+        ${showChange ? `<div class="row"><span class="lbl">Change:</span><span class="val">₱${receiptChange.toFixed(2)}</span></div>` : ""}
         <div class="line"></div>
         <div class="center">
           ${receiptFooterText ? `<div class="bold footer-note">${receiptFooterText}</div>` : ""}
@@ -3594,12 +3605,15 @@ export default function POSTableOrder() {
                         <span>Amount Paid:</span>
                         <span className="tabular-nums">{formatCurrency(lastReceiptForPrint?.amountPaid ?? finalTotal)}</span>
                       </div>
-                      {lastReceiptForPrint?.change != null && lastReceiptForPrint.change > 0 ? (
+                      {(lastReceiptForPrint?.paymentMethod?.toLowerCase().includes("cash") ||
+                        selectedPaymentMethod === "cash") && (
                         <div className="flex justify-between">
                           <span>Change:</span>
-                          <span className="tabular-nums">{formatCurrency(lastReceiptForPrint.change)}</span>
+                          <span className="tabular-nums">
+                            {formatCurrency(lastReceiptForPrint?.change ?? 0)}
+                          </span>
                         </div>
-                      ) : null}
+                      )}
                     </>
                   )}
                 </div>

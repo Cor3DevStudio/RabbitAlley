@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { TableGrid } from "@/components/dashboard/TableGrid";
@@ -28,6 +29,7 @@ import { Plus, ArrowRightLeft, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 export default function POS() {
+  const location = useLocation();
   const { hasPermission, user } = useAuth();
   const floorWaiter = isFloorWaiter(hasPermission);
   const canAddTable = hasPermission("manage_settings");
@@ -71,7 +73,7 @@ export default function POS() {
 
   useEffect(() => {
     loadTables();
-  }, []);
+  }, [location.pathname]);
 
   const handleAddTable = async (e: React.FormEvent) => {
     e.preventDefault();

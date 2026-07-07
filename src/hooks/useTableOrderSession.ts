@@ -48,7 +48,10 @@ function tabsFromOrders(orders: Array<Parameters<typeof mapApiOrderToTab>[0]>): 
   return tabs.length > 0 ? [...tabs, { id: null, items: [], sent: false }] : [{ id: null, items: [], sent: false }];
 }
 
-export function useTableOrderSession(tableId: string | undefined) {
+export function useTableOrderSession(
+  tableId: string | undefined,
+  options?: { releaseOnLeave?: boolean }
+) {
   const [table, setTable] = useState<Table | null>(null);
   const [tablesLoading, setTablesLoading] = useState(true);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -91,8 +94,13 @@ export function useTableOrderSession(tableId: string | undefined) {
         if (!cancelled) setTablesLoading(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [tableId, applySession]);
+    return () => {
+      cancelled = true;
+      if (options?.releaseOnLeave && tableId) {
+        void api.pos.releaseTable(tableId).catch(() => {});
+      }
+    };
+  }, [tableId, applySession, options?.releaseOnLeave]);
 
   const refetchOrders = useCallback(async () => {
     if (!tableId) return;

@@ -47,6 +47,7 @@ import {
   claimTableForWaiter,
   assertWaiterOwnsTable,
   isFloorWaiter,
+  releaseTableClaimIfIdle,
 } from "./lib/tableSessions.js";
 import {
   ensureProductPricingSchema,
@@ -2203,6 +2204,23 @@ app.get("/api/pos/tables/:tableId/session", requireAnyPermission("view_orders", 
     if (err.status === 403) return res.status(403).json({ error: err.message });
     console.error("Table session error:", err);
     res.status(500).json({ error: "Failed to load table session" });
+  }
+});
+
+/** POST — release table claim when waiter backs out without sending orders */
+app.post("/api/pos/tables/:tableId/release", requireAnyPermission("create_orders", "manage_pos"), async (req, res) => {
+  const { tableId } = req.params;
+  const branchId = getBranchId(req);
+  if (!isFloorWaiter(req.authUser)) {
+    return res.json({ ok: true, released: false });
+  }
+  try {
+    const db = await getPool();
+    const result = await releaseTableClaimIfIdle(db, branchId, tableId, req.authUser.employeeId);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("Table release error:", err);
+    res.status(500).json({ error: "Failed to release table" });
   }
 });
 

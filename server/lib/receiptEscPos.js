@@ -160,7 +160,17 @@ function buildCustomerReceipt(receipt, width = 48) {
   const payLabel = /^reprint/i.test(String(payMethod)) ? "—" : String(payMethod).toUpperCase();
   pl("Payment:", payLabel);
   pl("Amount Paid:", `P${Number(receipt.amountPaid).toFixed(2)}`);
-  pl("Change:", `P${Number(receipt.change || 0).toFixed(2)}`);
+  const receiptChange = Math.max(
+    0,
+    Number(
+      receipt.change != null
+        ? receipt.change
+        : Number(receipt.amountPaid || 0) - Number(receipt.total || 0)
+    )
+  );
+  if (/^CASH$/i.test(payLabel) || receiptChange > 0) {
+    pl("Change:", `P${receiptChange.toFixed(2)}`);
+  }
   b.push(line(width));
   b.push(align(1), ln("", width));
   if (receiptFooter) {
@@ -324,27 +334,33 @@ function buildPayslip(payslip, width = 48) {
     bold(true),
     ln("RABBIT ALLEY", width),
     bold(false),
-    ln("PAYSLIP", width),
+    ln("Bar & Restaurant", width),
+    ln("PAYSLIP RECEIPT", width),
     line(width),
     align(0),
-    pl("ID:", p.employeeId || ""),
+    bold(true),
+    ln("EMPLOYEE", width),
+    bold(false),
     pl("Name:", cleanText(String(p.name || "").slice(0, 24))),
+    pl("Employee No:", p.employeeId || ""),
     pl("Period:", `${p.periodFrom || ""} - ${p.periodTo || ""}`),
     line(width),
     bold(true),
     ln("EARNINGS", width),
     bold(false),
     pl("Budget:", `P${Number(p.allowance ?? 0).toFixed(2)}`),
+    pl("LD count (incl. open):", String(p.ldCount ?? 0)),
     pl("Commission:", `P${Number(p.commission ?? 0).toFixed(2)}`),
     pl("Incentives:", `P${Number(p.incentives ?? 0).toFixed(2)}`),
     pl("Adjustments:", `P${Number(p.adjustments ?? 0).toFixed(2)}`),
-    pl("Gross:", `P${Number(p.gross ?? 0).toFixed(2)}`),
     line(width),
+    bold(true),
     ln("DEDUCTIONS", width),
+    bold(false),
     pl("Deductions:", `P${Number(p.deductions ?? 0).toFixed(2)}`),
     line(width),
     bold(true),
-    pl("NET PAYOUT:", `P${Number(p.netPayout ?? 0).toFixed(2)}`),
+    pl("Total payout:", `P${Number(p.netPayout ?? 0).toFixed(2)}`),
     bold(false),
     line(width),
     align(1),

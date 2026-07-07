@@ -234,6 +234,8 @@ export const api = {
         orders: Array<Order & { orderNumber: string; items: OrderItem[]; voidedAt?: string | null; voidedByName?: string | null }>;
         tableStatus: string;
       }>(`/api/pos/tables/${tableId}/session`),
+    releaseTable: (tableId: string) =>
+      fetchApi<{ ok: boolean; released: boolean }>(`/api/pos/tables/${tableId}/release`, { method: "POST" }),
   },
   orders: {
     create: (body: { tableId: string; employeeId?: string; items: OrderItem[]; subtotal: number; tax: number; total: number }) =>

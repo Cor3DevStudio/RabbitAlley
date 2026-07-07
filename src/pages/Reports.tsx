@@ -1326,9 +1326,10 @@ export default function Reports() {
             <div class="row"><span class="label">Budget</span><span class="value">${row.budget.toFixed(2)}</span></div>
             <div class="row"><span class="label">LD count (incl. open)</span><span class="value">${ldCountLive}</span></div>
             <div class="row"><span class="label">Commission</span><span class="value">${row.commission.toFixed(2)}</span></div>
+            <div class="row"><span class="label">Incentives</span><span class="value">${row.incentives.toFixed(2)}</span></div>
             ${(row.incentivesBreakdown && row.incentivesBreakdown.length > 0)
               ? row.incentivesBreakdown.map((i: BreakdownItem) => `<div class="row"><span class="label">${i.title || "Incentive"}</span><span class="value">${i.amount.toFixed(2)}</span></div>`).join("")
-              : (row.incentives > 0 ? `<div class="row"><span class="label">Incentives</span><span class="value">${row.incentives.toFixed(2)}</span></div>` : "")}
+              : ""}
             ${(row.adjustmentsBreakdown && row.adjustmentsBreakdown.length > 0)
               ? row.adjustmentsBreakdown.map((a: BreakdownItem) => `<div class="row"><span class="label">${a.title || "Adjustment"}</span><span class="value">${a.amount.toFixed(2)}</span></div>`).join("")
               : (row.adjustments !== 0 ? `<div class="row"><span class="label">Adjustments</span><span class="value">${row.adjustments.toFixed(2)}</span></div>` : "")}
@@ -1423,16 +1424,15 @@ export default function Reports() {
     doc.text("Commission", left, y);
     doc.text(row.commission.toFixed(2), right, y, { align: "right" });
     y += 5;
+    doc.text("Incentives", left, y);
+    doc.text(row.incentives.toFixed(2), right, y, { align: "right" });
+    y += 5;
     if (row.incentivesBreakdown && row.incentivesBreakdown.length > 0) {
       for (const i of row.incentivesBreakdown) {
         doc.text(i.title || "Incentive", left, y);
         doc.text(i.amount.toFixed(2), right, y, { align: "right" });
         y += 5;
       }
-    } else if (row.incentives > 0) {
-      doc.text("Incentives", left, y);
-      doc.text(row.incentives.toFixed(2), right, y, { align: "right" });
-      y += 5;
     }
     if (row.adjustmentsBreakdown && row.adjustmentsBreakdown.length > 0) {
       for (const a of row.adjustmentsBreakdown) {
@@ -1498,6 +1498,7 @@ export default function Reports() {
   const handlePrintPayslipThermal = useCallback(async (row: PayrollRow) => {
     const gross = row.budget + row.commission + row.incentives + row.adjustments;
     const net = gross - row.deductions;
+    const ldCountLive = row.ldCountRealtime ?? row.ldCount ?? 0;
     try {
       const res = await api.print.payslip({
         employeeId: row.employeeId,
@@ -1509,6 +1510,7 @@ export default function Reports() {
         perHour: 0,
         commission: row.commission,
         incentives: row.incentives,
+        ldCount: ldCountLive,
         adjustments: row.adjustments,
         deductions: row.deductions,
         gross,

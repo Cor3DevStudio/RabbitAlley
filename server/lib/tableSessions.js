@@ -177,6 +177,41 @@ export function isFloorWaiter(authUser) {
   return perms.includes("create_orders") && !perms.includes("accept_payments");
 }
 
+/**
+ * Release a claim when the waiter leaves without sending any orders.
+ * No-op if there are pending orders or another waiter owns the session.
+ */
+export async function releaseTableClaimIfIdle(db, branchId, tableId, employeeId) {
+  const emp = normalizeEmployeeId(employeeId);
+  if (!emp || !tableId) return { released: false };
+
+  const session = await getOpenSession(db, branchId, tableId);
+  if (!session) return { released: false };
+
+  const owner = normalizeEmployeeId(session.waiter_id);
+  if (owner && owner !== emp) return { released: false };
+
+  let pending;
+  try {
+    [pending] = await db.execute(
+      `SELECT id FROM orders
+       WHERE branch_id = ? AND table_id = ? AND status = 'pending' AND voided_at IS NULL
+       LIMIT 1`,
+      [branchId, tableId]
+    );
+  } catch (e) {
+    if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+    [pending] = await db.execute(
+      `SELECT id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending' LIMIT 1`,
+      [branchId, tableId]
+    );
+  }
+  if (pending.length) return { released: false };
+
+  await closeSession(db, session.id, { closedBy: `waiter:${emp}:release` });
+  return { released: true };
+}
+
 /** Open a new session for a fresh seating (table was available). */
 export async function openSession(db, { branchId, tableId, waiterId = null }) {
   const [result] = await db.execute(
