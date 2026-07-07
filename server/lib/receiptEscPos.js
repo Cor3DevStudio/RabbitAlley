@@ -321,6 +321,56 @@ function buildRunningBill({ businessName: bName, businessAddress: bAddr, date, t
   return Buffer.concat(b);
 }
 
+function sumPayslipBreakdown(breakdown) {
+  if (!Array.isArray(breakdown)) return 0;
+  return breakdown.reduce((s, x) => s + Number(x.amount || 0), 0);
+}
+
+function payslipIncentiveLinesFromPayload(p) {
+  const lines = [];
+  if (Number(p.incentives) > 0) lines.push({ label: "LD Incentives", amount: Number(p.incentives) });
+  if (Array.isArray(p.incentivesBreakdown)) {
+    for (const item of p.incentivesBreakdown) {
+      lines.push({ label: String(item.title || "Incentive"), amount: Number(item.amount || 0) });
+    }
+  }
+  return lines;
+}
+
+function payslipAdjustmentLinesFromPayload(p) {
+  if (Array.isArray(p.adjustmentsBreakdown) && p.adjustmentsBreakdown.length > 0) {
+    return p.adjustmentsBreakdown.map((item) => ({
+      label: String(item.title || "Adjustment"),
+      amount: Number(item.amount || 0),
+    }));
+  }
+  if (Number(p.adjustments) !== 0) return [{ label: "Adjustments", amount: Number(p.adjustments) }];
+  return [];
+}
+
+function payslipDeductionLinesFromPayload(p) {
+  if (Array.isArray(p.deductionsBreakdown) && p.deductionsBreakdown.length > 0) {
+    return p.deductionsBreakdown.map((item) => ({
+      label: String(item.title || "Deduction"),
+      amount: Number(item.amount || 0),
+    }));
+  }
+  if (Number(p.deductions) > 0) return [{ label: "Deductions", amount: Number(p.deductions) }];
+  return [];
+}
+
+function pushPayslipGroup(b, width, pl, title, lines, total) {
+  b.push(bold(true), ln(title, width), bold(false));
+  const items = lines.length > 0 ? lines : [{ label: "—", amount: 0 }];
+  for (const item of items) {
+    const label = `${String(item.label || "").slice(0, 28)}:`;
+    pl(label, `P${Number(item.amount || 0).toFixed(2)}`);
+  }
+  b.push(bold(true));
+  pl("Total:", `P${Number(total || 0).toFixed(2)}`);
+  b.push(bold(false));
+}
+
 function buildPayslip(payslip, width = 48) {
   const p = payslip || {};
   const pl = (label, val) => {
@@ -328,6 +378,19 @@ function buildPayslip(payslip, width = 48) {
     const pad = Math.max(1, width - label.length - v.length);
     return ln(label + " ".repeat(pad) + v, width);
   };
+  const incentiveLines = payslipIncentiveLinesFromPayload(p);
+  const incentiveTotal = Number(p.incentives ?? 0) + sumPayslipBreakdown(p.incentivesBreakdown);
+  const adjustmentLines = payslipAdjustmentLinesFromPayload(p);
+  const adjustmentTotal =
+    Array.isArray(p.adjustmentsBreakdown) && p.adjustmentsBreakdown.length > 0
+      ? sumPayslipBreakdown(p.adjustmentsBreakdown)
+      : Number(p.adjustments ?? 0);
+  const deductionLines = payslipDeductionLinesFromPayload(p);
+  const deductionTotal =
+    Array.isArray(p.deductionsBreakdown) && p.deductionsBreakdown.length > 0
+      ? sumPayslipBreakdown(p.deductionsBreakdown)
+      : Number(p.deductions ?? 0);
+
   const b = [
     init(),
     align(1),
@@ -351,21 +414,22 @@ function buildPayslip(payslip, width = 48) {
     pl("Budget:", `P${Number(p.allowance ?? 0).toFixed(2)}`),
     pl("LD count (incl. open):", String(p.ldCount ?? 0)),
     pl("Commission:", `P${Number(p.commission ?? 0).toFixed(2)}`),
-    pl("Incentives:", `P${Number(p.incentives ?? 0).toFixed(2)}`),
-    pl("Adjustments:", `P${Number(p.adjustments ?? 0).toFixed(2)}`),
     line(width),
-    bold(true),
-    ln("DEDUCTIONS", width),
-    bold(false),
-    pl("Deductions:", `P${Number(p.deductions ?? 0).toFixed(2)}`),
+  ];
+  pushPayslipGroup(b, width, pl, "INCENTIVES", incentiveLines, incentiveTotal);
+  b.push(line(width));
+  pushPayslipGroup(b, width, pl, "ADJUSTMENTS", adjustmentLines, adjustmentTotal);
+  b.push(line(width));
+  pushPayslipGroup(b, width, pl, "DEDUCTIONS", deductionLines, deductionTotal);
+  b.push(
     line(width),
     bold(true),
     pl("Total payout:", `P${Number(p.netPayout ?? 0).toFixed(2)}`),
     bold(false),
     line(width),
     align(1),
-    ln(`Status: ${String(p.status || "draft").toUpperCase()}`, width),
-  ];
+    ln(`Status: ${String(p.status || "draft").toUpperCase()}`, width)
+  );
   if (p.approvedBy) b.push(ln(`Approved: ${cleanText(p.approvedBy)}`, width));
   b.push(
     ln("", width),

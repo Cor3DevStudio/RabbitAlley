@@ -246,18 +246,13 @@ export async function attachOrderToSession(db, orderId, sessionId, visitAnchorOr
 
 /**
  * Ensure the table has an open session and attach the order.
- * Fresh seating (isFreshSeating=true) always opens a new session.
- * Otherwise reuses the open session, or opens one if missing.
+ * Reuses an existing open session when present (including waiter claim before first order).
+ * Opens a new session only when none exists.
  */
-export async function ensureSessionForOrder(db, { branchId, tableId, orderId, waiterId, isFreshSeating }) {
+export async function ensureSessionForOrder(db, { branchId, tableId, orderId, waiterId, isFreshSeating: _isFreshSeating }) {
   if (!tableId) return null;
 
-  let session = isFreshSeating ? null : await getOpenSession(db, branchId, tableId);
-  if (isFreshSeating && session) {
-    // Table was available but an open session lingered — close it first
-    await closeSession(db, session.id, { closedBy: "system:fresh_seating" });
-    session = null;
-  }
+  const session = await getOpenSession(db, branchId, tableId);
 
   let sessionId;
   let visitAnchor;
@@ -266,6 +261,9 @@ export async function ensureSessionForOrder(db, { branchId, tableId, orderId, wa
     visitAnchor = orderId;
   } else {
     sessionId = Number(session.id);
+    if (waiterId && !session.waiter_id) {
+      await db.execute(`UPDATE table_sessions SET waiter_id = ? WHERE id = ?`, [waiterId, sessionId]);
+    }
     const [anchorRows] = await db.execute(
       `SELECT MIN(id) AS anchor FROM orders WHERE session_id = ? AND voided_at IS NULL`,
       [sessionId]
@@ -299,12 +297,15 @@ export async function closeSession(db, sessionId, { closedBy = null } = {}) {
   );
 }
 
-/** Close the open session for a table (pay-all / vacate). */
+/** Close all open sessions for a table (pay-all / vacate). */
 export async function closeOpenSessionForTable(db, branchId, tableId, { closedBy = null } = {}) {
-  const session = await getOpenSession(db, branchId, tableId);
-  if (!session) return null;
-  await closeSession(db, session.id, { closedBy });
-  return Number(session.id);
+  const [result] = await db.execute(
+    `UPDATE table_sessions
+     SET status = 'closed', closed_at = COALESCE(closed_at, NOW()), closed_by = COALESCE(?, closed_by)
+     WHERE branch_id = ? AND table_id = ? AND status = 'open'`,
+    [closedBy, branchId, tableId]
+  );
+  return result.affectedRows > 0 ? result.affectedRows : null;
 }
 
 /**

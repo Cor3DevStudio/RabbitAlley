@@ -197,6 +197,100 @@ function escapeHtml(value: unknown): string {
     .replaceAll("'", "&#39;");
 }
 
+function payslipBreakdownSum(items?: BreakdownItem[] | null): number {
+  return Array.isArray(items) ? items.reduce((s, x) => s + (x.amount ?? 0), 0) : 0;
+}
+
+type PayslipLine = { label: string; amount: number };
+
+function payslipIncentiveLines(row: PayrollRow): PayslipLine[] {
+  const lines: PayslipLine[] = [];
+  if (row.incentives > 0) lines.push({ label: "LD Incentives", amount: row.incentives });
+  if (Array.isArray(row.incentivesBreakdown)) {
+    for (const item of row.incentivesBreakdown) {
+      lines.push({ label: item.title || "Incentive", amount: item.amount });
+    }
+  }
+  return lines;
+}
+
+function payslipAdjustmentLines(row: PayrollRow): PayslipLine[] {
+  if (Array.isArray(row.adjustmentsBreakdown) && row.adjustmentsBreakdown.length > 0) {
+    return row.adjustmentsBreakdown.map((item) => ({ label: item.title || "Adjustment", amount: item.amount }));
+  }
+  if (row.adjustments !== 0) return [{ label: "Adjustments", amount: row.adjustments }];
+  return [];
+}
+
+function payslipDeductionLines(row: PayrollRow): PayslipLine[] {
+  if (Array.isArray(row.deductionsBreakdown) && row.deductionsBreakdown.length > 0) {
+    return row.deductionsBreakdown.map((item) => ({ label: item.title || "Deduction", amount: item.amount }));
+  }
+  if (row.deductions > 0) return [{ label: "Deductions", amount: row.deductions }];
+  return [];
+}
+
+function payslipIncentiveSubtotal(row: PayrollRow): number {
+  return row.incentives + payslipBreakdownSum(row.incentivesBreakdown);
+}
+
+function payslipAdjustmentSubtotal(row: PayrollRow): number {
+  return Array.isArray(row.adjustmentsBreakdown) && row.adjustmentsBreakdown.length > 0
+    ? payslipBreakdownSum(row.adjustmentsBreakdown)
+    : row.adjustments;
+}
+
+function payslipDeductionSubtotal(row: PayrollRow): number {
+  return Array.isArray(row.deductionsBreakdown) && row.deductionsBreakdown.length > 0
+    ? payslipBreakdownSum(row.deductionsBreakdown)
+    : row.deductions;
+}
+
+function payslipGroupSectionHtml(lines: PayslipLine[], subtotal: number): string {
+  const itemRows =
+    lines.length > 0
+      ? lines
+          .map(
+            (item) =>
+              `<div class="row"><span class="label">${escapeHtml(item.label)}</span><span class="value">${item.amount.toFixed(2)}</span></div>`
+          )
+          .join("")
+      : `<div class="row"><span class="label">—</span><span class="value">0.00</span></div>`;
+  return `${itemRows}<div class="row group-total"><span class="label">Total</span><span class="value">${subtotal.toFixed(2)}</span></div>`;
+}
+
+function drawPayslipGroupSection(
+  doc: jsPDF,
+  left: number,
+  right: number,
+  y: number,
+  title: string,
+  lines: PayslipLine[],
+  subtotal: number
+): number {
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  doc.text(title, left, y);
+  doc.setFont("helvetica", "normal");
+  y += 6;
+  doc.setFontSize(10);
+  const items = lines.length > 0 ? lines : [{ label: "—", amount: 0 }];
+  for (const item of items) {
+    const label = item.label.length > 42 ? `${item.label.slice(0, 41)}…` : item.label;
+    doc.text(label, left, y);
+    doc.text(item.amount.toFixed(2), right, y, { align: "right" });
+    y += 5;
+  }
+  y += 1;
+  for (let x = left; x < right; x += 3) doc.line(x, y, Math.min(x + 2, right), y);
+  y += 4;
+  doc.setFont("helvetica", "bold");
+  doc.text("Total", left, y);
+  doc.text(subtotal.toFixed(2), right, y, { align: "right" });
+  doc.setFont("helvetica", "normal");
+  return y + 8;
+}
+
 interface PayrollTableRowProps {
   row: PayrollRow;
   onNameClick: (row: PayrollRow) => void;
@@ -1305,6 +1399,7 @@ export default function Reports() {
           .total-row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 700; color: #000; }
           .footer { padding: 12px 24px; text-align: center; font-size: 11px; color: #000; border-top: 1px dashed #000; }
           .footer-row { margin: 3px 0; }
+          .group-total { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #000; font-weight: 600; }
         </style>
       </head>
       <body>
@@ -1326,20 +1421,20 @@ export default function Reports() {
             <div class="row"><span class="label">Budget</span><span class="value">${row.budget.toFixed(2)}</span></div>
             <div class="row"><span class="label">LD count (incl. open)</span><span class="value">${ldCountLive}</span></div>
             <div class="row"><span class="label">Commission</span><span class="value">${row.commission.toFixed(2)}</span></div>
-            <div class="row"><span class="label">Incentives</span><span class="value">${row.incentives.toFixed(2)}</span></div>
-            ${(row.incentivesBreakdown && row.incentivesBreakdown.length > 0)
-              ? row.incentivesBreakdown.map((i: BreakdownItem) => `<div class="row"><span class="label">${i.title || "Incentive"}</span><span class="value">${i.amount.toFixed(2)}</span></div>`).join("")
-              : ""}
-            ${(row.adjustmentsBreakdown && row.adjustmentsBreakdown.length > 0)
-              ? row.adjustmentsBreakdown.map((a: BreakdownItem) => `<div class="row"><span class="label">${a.title || "Adjustment"}</span><span class="value">${a.amount.toFixed(2)}</span></div>`).join("")
-              : (row.adjustments !== 0 ? `<div class="row"><span class="label">Adjustments</span><span class="value">${row.adjustments.toFixed(2)}</span></div>` : "")}
+          </div>
+          <hr class="divider" />
+          <div class="section">
+            <div class="section-title">Incentives</div>
+            ${payslipGroupSectionHtml(payslipIncentiveLines(row), payslipIncentiveSubtotal(row))}
+          </div>
+          <div class="section">
+            <div class="section-title">Adjustments</div>
+            ${payslipGroupSectionHtml(payslipAdjustmentLines(row), payslipAdjustmentSubtotal(row))}
           </div>
           <hr class="divider" />
           <div class="section">
             <div class="section-title">Deductions</div>
-            ${(row.deductionsBreakdown && row.deductionsBreakdown.length > 0)
-              ? row.deductionsBreakdown.map((d: BreakdownItem) => `<div class="row"><span class="label">${d.title || "Deduction"}</span><span class="value">${d.amount.toFixed(2)}</span></div>`).join("")
-              : (row.deductions > 0 ? `<div class="row"><span class="label">Deductions</span><span class="value">${row.deductions.toFixed(2)}</span></div>` : `<div class="row"><span class="label">—</span><span class="value">0.00</span></div>`)}
+            ${payslipGroupSectionHtml(payslipDeductionLines(row), payslipDeductionSubtotal(row))}
           </div>
           <div class="total-block">
             <div class="total-row"><span>Total payout</span><span>${totalPayout.toFixed(2)}</span></div>
@@ -1423,50 +1518,17 @@ export default function Reports() {
     y += 5;
     doc.text("Commission", left, y);
     doc.text(row.commission.toFixed(2), right, y, { align: "right" });
-    y += 5;
-    doc.text("Incentives", left, y);
-    doc.text(row.incentives.toFixed(2), right, y, { align: "right" });
-    y += 5;
-    if (row.incentivesBreakdown && row.incentivesBreakdown.length > 0) {
-      for (const i of row.incentivesBreakdown) {
-        doc.text(i.title || "Incentive", left, y);
-        doc.text(i.amount.toFixed(2), right, y, { align: "right" });
-        y += 5;
-      }
-    }
-    if (row.adjustmentsBreakdown && row.adjustmentsBreakdown.length > 0) {
-      for (const a of row.adjustmentsBreakdown) {
-        doc.text(a.title || "Adjustment", left, y);
-        doc.text(a.amount.toFixed(2), right, y, { align: "right" });
-        y += 5;
-      }
-    } else if (row.adjustments !== 0) {
-      doc.text("Adjustments", left, y);
-      doc.text(row.adjustments.toFixed(2), right, y, { align: "right" });
-      y += 5;
-    }
-    y += 5;
+    y += 10;
     dottedLine(y);
     y += 8;
 
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "bold");
-    doc.text("DEDUCTIONS", left, y);
-    doc.setFont("helvetica", "normal");
-    y += 6;
-    doc.setFontSize(10);
-    if (row.deductionsBreakdown && row.deductionsBreakdown.length > 0) {
-      for (const d of row.deductionsBreakdown) {
-        doc.text(d.title || "Deduction", left, y);
-        doc.text(d.amount.toFixed(2), right, y, { align: "right" });
-        y += 5;
-      }
-    } else if (row.deductions > 0) {
-      doc.text("Deductions", left, y);
-      doc.text(row.deductions.toFixed(2), right, y, { align: "right" });
-      y += 5;
-    }
-    y += 7;
+    y = drawPayslipGroupSection(doc, left, right, y, "INCENTIVES", payslipIncentiveLines(row), payslipIncentiveSubtotal(row));
+    y = drawPayslipGroupSection(doc, left, right, y, "ADJUSTMENTS", payslipAdjustmentLines(row), payslipAdjustmentSubtotal(row));
+    y += 2;
+    dottedLine(y);
+    y += 8;
+    y = drawPayslipGroupSection(doc, left, right, y, "DEDUCTIONS", payslipDeductionLines(row), payslipDeductionSubtotal(row));
+    y += 2;
 
     doc.setDrawColor(0, 0, 0);
     doc.rect(left, y - 2, right - left, 14, "S");
@@ -1496,8 +1558,6 @@ export default function Reports() {
   }, [dateFrom, dateTo]);
 
   const handlePrintPayslipThermal = useCallback(async (row: PayrollRow) => {
-    const gross = row.budget + row.commission + row.incentives + row.adjustments;
-    const net = gross - row.deductions;
     const ldCountLive = row.ldCountRealtime ?? row.ldCount ?? 0;
     try {
       const res = await api.print.payslip({
@@ -1511,10 +1571,13 @@ export default function Reports() {
         commission: row.commission,
         incentives: row.incentives,
         ldCount: ldCountLive,
+        incentivesBreakdown: row.incentivesBreakdown ?? [],
         adjustments: row.adjustments,
+        adjustmentsBreakdown: row.adjustmentsBreakdown ?? [],
         deductions: row.deductions,
-        gross,
-        netPayout: net,
+        deductionsBreakdown: row.deductionsBreakdown ?? [],
+        gross: row.budget + row.commission + payslipIncentiveSubtotal(row) + payslipAdjustmentSubtotal(row),
+        netPayout: row.netPayout,
         status: row.status,
         approvedBy: row.approvedBy ?? undefined,
       });

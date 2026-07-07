@@ -824,7 +824,13 @@ export const api = {
       }),
     payslip: (payslip: {
       employeeId: string; name: string; periodFrom: string; periodTo: string;
-      allowance: number; hours: number; perHour: number; commission: number; incentives: number; adjustments: number; deductions: number;
+      allowance: number; hours: number; perHour: number; commission: number; incentives: number;
+      ldCount?: number;
+      incentivesBreakdown?: Array<{ title: string; amount: number }>;
+      adjustments: number;
+      adjustmentsBreakdown?: Array<{ title: string; amount: number }>;
+      deductions: number;
+      deductionsBreakdown?: Array<{ title: string; amount: number }>;
       gross: number; netPayout: number; status: string; approvedBy?: string | null;
     }) => fetchApi<{ ok: boolean; error?: string; fallback?: boolean }>("/api/print/payslip", { method: "POST", body: JSON.stringify({ payslip }) }),
     runningBill: (body: Record<string, unknown>) =>

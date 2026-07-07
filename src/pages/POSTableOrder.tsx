@@ -14,6 +14,14 @@ import {
   savePendingBillAdjustments,
   clearPendingBillAdjustments,
 } from "@/lib/pendingBillAdjustments";
+import {
+  type PaymentMethod,
+  type SplitMethod,
+  MANUAL_AMOUNT_METHODS,
+  isCardPaymentMethod,
+  normalizePaymentMethod,
+  paymentMethodLabel as formatPaymentMethodLabel,
+} from "@/lib/paymentMethods";
 import { type Table, type Product } from "@/types/pos";
 import { formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -30,10 +38,6 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-
-type PaymentMethod = "cash" | "gcash" | "debit" | "credit" | "bank" | "charge";
-const MANUAL_AMOUNT_METHODS: PaymentMethod[] = ["cash", "gcash", "bank", "debit", "credit"];
-type SplitMethod = "cash" | "gcash" | "bank" | "debit" | "credit" | "charge";
 
 export default function POSTableOrder() {
   const { tableId } = useParams<{ tableId: string }>();
@@ -85,9 +89,7 @@ export default function POSTableOrder() {
   const [paymentMethodModalOpen, setPaymentMethodModalOpen] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>(() => {
     const saved = loadPendingBillAdjustments(tableId);
-    const m = saved?.selectedPaymentMethod;
-    if (m === "cash" || m === "gcash" || m === "debit" || m === "credit" || m === "bank" || m === "charge") return m;
-    return "cash";
+    return normalizePaymentMethod(saved?.selectedPaymentMethod);
   });
   const [useSplitPayment, setUseSplitPayment] = useState(() => !!loadPendingBillAdjustments(tableId)?.useSplitPayment);
   const [splitPayments, setSplitPayments] = useState<Array<{ amount: string; method: SplitMethod }>>(() => {
@@ -100,7 +102,7 @@ export default function POSTableOrder() {
     }
     return [
       { amount: "", method: "cash" },
-      { amount: "", method: "gcash" },
+      { amount: "", method: "bank" },
     ];
   });
   const [splitChargeNames, setSplitChargeNames] = useState<Record<number, string>>(() => {
@@ -500,7 +502,7 @@ export default function POSTableOrder() {
             : Number(receipt.amountPaid || 0) - Number(receipt.total || 0)
         )
       );
-      const showChange = /^CASH$/i.test(paymentDisplay) || receiptChange > 0;
+      const showChange = /^CASH$/i.test(paymentDisplay) || /^GCASH$/i.test(paymentDisplay) || receiptChange > 0;
 
       const html = `
       <!DOCTYPE html>
@@ -1042,11 +1044,11 @@ export default function POSTableOrder() {
   const discountedTotal = discountedSubtotal + discountedTax + discountedServiceCharge;
   // Card surcharge: for non-split use selected method; for split support both input styles:
   // (a) card split entered as base amount, or (b) entered as collected amount incl. surcharge.
-  const hasCardSurcharge = !useSplitPayment && (selectedPaymentMethod === "debit" || selectedPaymentMethod === "credit");
+  const hasCardSurcharge = !useSplitPayment && isCardPaymentMethod(selectedPaymentMethod);
   const cardSurcharge = hasCardSurcharge ? discountedSubtotal * cardSurchargeDecimal : 0;
   const splitCardSurchargeRaw = useSplitPayment
     ? splitPayments.reduce((sum, sp) => {
-        if (sp.method === "debit" || sp.method === "credit") {
+        if (isCardPaymentMethod(sp.method)) {
           return sum + (Number(sp.amount) || 0) * cardSurchargeDecimal;
         }
         return sum;
@@ -1055,7 +1057,7 @@ export default function POSTableOrder() {
   const splitBaseTotalAdjusted = useSplitPayment
     ? splitPayments.reduce((sum, sp) => {
         const amt = Number(sp.amount) || 0;
-        if (sp.method === "debit" || sp.method === "credit") {
+        if (isCardPaymentMethod(sp.method)) {
           return sum + (amt / (1 + cardSurchargeDecimal));
         }
         return sum + amt;
@@ -1064,7 +1066,7 @@ export default function POSTableOrder() {
   const splitCardSurchargeAdjusted = useSplitPayment
     ? splitPayments.reduce((sum, sp) => {
         const amt = Number(sp.amount) || 0;
-        if (sp.method === "debit" || sp.method === "credit") {
+        if (isCardPaymentMethod(sp.method)) {
           return sum + (amt - amt / (1 + cardSurchargeDecimal));
         }
         return sum;
@@ -1083,12 +1085,13 @@ export default function POSTableOrder() {
   const amountEntryLabel =
     selectedPaymentMethod === "cash"
       ? "Amount Tendered"
-      : selectedPaymentMethod === "debit" || selectedPaymentMethod === "credit"
+      : selectedPaymentMethod === "gcash"
+        ? "GCash Amount Received"
+      : isCardPaymentMethod(selectedPaymentMethod)
         ? "Amount Charged"
         : "Amount Received";
   const amountReceivedNum = amountTendered ? parseFloat(amountTendered) : NaN;
   const changeAmount =
-    selectedPaymentMethod === "cash" &&
     showAmountEntry &&
     Number.isFinite(amountReceivedNum) &&
     amountReceivedNum > finalTotal
@@ -1258,7 +1261,7 @@ export default function POSTableOrder() {
           undefined,
           splitPayments.map((sp, idx) => ({
             amount: Number(sp.amount) || 0,
-            paymentMethod: sp.method,
+            paymentMethod: normalizePaymentMethod(sp.method),
             customerName: sp.method === "charge" ? (splitChargeNames[idx] || (chargeSplitsCount === 1 ? chargeCustomerName : "")) : undefined,
           }))
         );
@@ -1292,15 +1295,14 @@ export default function POSTableOrder() {
       const settledAmountPaid = manualAmountPaid
         ? ((paidSummary?.amountReceived ?? parseFloat(amountTendered)) || settledTotal)
         : settledTotal;
-      const settledChange =
-        selectedPaymentMethod === "cash" && manualAmountPaid
-          ? (paidSummary?.change ?? Math.max(0, settledAmountPaid - settledTotal))
-          : 0;
-      const paymentMethodLabel = useSplitPayment
-        ? `Split (${splitPayments.map((sp, idx) => `${sp.method === "charge" ? `Charge-${splitChargeNames[idx] || ""}` : sp.method.toUpperCase()} ₱${sp.amount}`).join(" / ")})`
+      const settledChange = manualAmountPaid
+        ? (paidSummary?.change ?? Math.max(0, settledAmountPaid - settledTotal))
+        : 0;
+      const receiptPaymentLabel = useSplitPayment
+        ? `Split (${splitPayments.map((sp, idx) => `${sp.method === "charge" ? `Charge-${splitChargeNames[idx] || ""}` : formatPaymentMethodLabel(sp.method).toUpperCase()} ₱${sp.amount}`).join(" / ")})`
         : selectedPaymentMethod === "charge"
           ? `Charge - ${chargeCustomerName}`
-          : selectedPaymentMethod;
+          : formatPaymentMethodLabel(selectedPaymentMethod);
       const receiptData = {
         orderNumber: formatOrderListLabel(paidOrderNumbers.length ? paidOrderNumbers : paidOrderIds),
         date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
@@ -1333,7 +1335,7 @@ export default function POSTableOrder() {
         cardSurcharge: settledCardSurcharge > 0 ? settledCardSurcharge : undefined,
         total: settledTotal,
         amountDue: settledTotal,
-        paymentMethod: paymentMethodLabel,
+        paymentMethod: receiptPaymentLabel,
         amountPaid: settledAmountPaid,
         change: settledChange,
       };
@@ -1361,8 +1363,7 @@ export default function POSTableOrder() {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       setLastReceiptSentToBackend(receiptSent);
       setPaymentStep("done");
-      // Transaction closed — lock discount/surcharge into final record and clear pending session state
-      clearPendingBillState();
+      // Bill state clears when staff clicks Done (keeps correct payment method on receipt preview).
       toast.success(
         receiptSent
           ? "Payment complete. Receipt sent to printer."
@@ -2413,7 +2414,7 @@ export default function POSTableOrder() {
                     {splitPayments.map((sp, idx) => {
                       const amt = Number(sp.amount) || 0;
                       if (amt <= 0) return null;
-                      const label = sp.method === "charge" ? `Charge (${splitChargeNames[idx] || (chargeSplitsCount === 1 ? chargeCustomerName : "") || "—"})` : sp.method.toUpperCase();
+                      const label = sp.method === "charge" ? `Charge (${splitChargeNames[idx] || (chargeSplitsCount === 1 ? chargeCustomerName : "") || "—"})` : formatPaymentMethodLabel(sp.method);
                       return (
                         <div key={idx} className="flex justify-between text-sm">
                           <span>{label}</span>
@@ -2497,7 +2498,7 @@ export default function POSTableOrder() {
                     onChange={(e) => setAmountTendered(e.target.value)}
                     className="text-lg font-semibold"
                   />
-                  {selectedPaymentMethod === "cash" && amountTendered && parseFloat(amountTendered) >= finalTotal && changeAmount > 0 && (
+                  {showAmountEntry && amountTendered && parseFloat(amountTendered) >= finalTotal && changeAmount > 0 && (
                     <div className="flex justify-between text-sm pt-2 border-t border-border">
                       <span className="text-muted-foreground">Change</span>
                       <span className="font-bold">{formatCurrency(changeAmount)}</span>
@@ -2619,7 +2620,7 @@ export default function POSTableOrder() {
                             className="text-sm"
                           />
                         )}
-                        {(split.method === "debit" || split.method === "credit") && Number(split.amount) > 0 && (
+                        {(isCardPaymentMethod(split.method)) && Number(split.amount) > 0 && (
                           <p className="text-xs text-blue-600">
                             Card fee: +{formatCurrency(Number(split.amount) * cardSurchargeDecimal)} = {formatCurrency(Number(split.amount) * (1 + cardSurchargeDecimal))} collected
                           </p>
@@ -3582,7 +3583,31 @@ export default function POSTableOrder() {
 
                 {/* Payment Info */}
                 <div className="border-t border-dashed border-gray-300 dark:border-gray-600 pt-3 mb-3 space-y-1 text-xs">
-                  {useSplitPayment ? (
+                  {lastReceiptForPrint && (paymentStep === "printing" || paymentStep === "done") ? (
+                    <>
+                      <div className="flex justify-between">
+                        <span>Payment:</span>
+                        <span className={lastReceiptForPrint.paymentMethod.startsWith("Split") ? "" : "uppercase"}>
+                          {lastReceiptForPrint.paymentMethod}
+                        </span>
+                      </div>
+                      <div className="flex justify-between font-bold">
+                        <span>Amount Paid:</span>
+                        <span className="tabular-nums">{formatCurrency(lastReceiptForPrint.amountPaid)}</span>
+                      </div>
+                      {(lastReceiptForPrint.change ?? 0) > 0 ||
+                      MANUAL_AMOUNT_METHODS.includes(
+                        lastReceiptForPrint.paymentMethod.toLowerCase() as PaymentMethod
+                      ) ? (
+                        <div className="flex justify-between">
+                          <span>Change:</span>
+                          <span className="tabular-nums">
+                            {formatCurrency(lastReceiptForPrint.change ?? 0)}
+                          </span>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : useSplitPayment ? (
                     <>
                       <div className="flex justify-between font-medium">
                         <span>Payment:</span>
@@ -3605,8 +3630,7 @@ export default function POSTableOrder() {
                         <span>Amount Paid:</span>
                         <span className="tabular-nums">{formatCurrency(lastReceiptForPrint?.amountPaid ?? finalTotal)}</span>
                       </div>
-                      {(lastReceiptForPrint?.paymentMethod?.toLowerCase().includes("cash") ||
-                        selectedPaymentMethod === "cash") && (
+                      {!useSplitPayment && MANUAL_AMOUNT_METHODS.includes(selectedPaymentMethod) && (
                         <div className="flex justify-between">
                           <span>Change:</span>
                           <span className="tabular-nums">

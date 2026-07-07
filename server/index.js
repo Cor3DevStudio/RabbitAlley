@@ -29,6 +29,14 @@ import { buildCustomerReceiptHtml, buildRunningBillHtml } from "./lib/receiptBro
 import { computePayslipGross, computePayslipNet } from "./lib/payrollTotals.js";
 import { allocateOrderNumber, formatOrderDisplayNumber } from "./lib/orderNumbers.js";
 import {
+  normalizePaymentMethod,
+  isCardPaymentMethod,
+  SALES_CASH_COND,
+  SALES_CARD_COND,
+  SALES_GCASH_COND,
+  SALES_BANK_COND,
+} from "./lib/paymentMethods.js";
+import {
   fetchOrderItemsByOrderIds,
   fetchPendingOrdersForTable,
   mapOrderHeaderRow,
@@ -1076,12 +1084,6 @@ async function computePayrollForPeriod(db, branchId, fromDate, toDate, dayStartH
   }
   return results;
 }
-
-/** Payment method mapping for shift aggregation (cash, card, gcash, bank) */
-const SALES_CASH_COND = "payment_method = 'cash'";
-const SALES_CARD_COND = "payment_method IN ('credit','debit')";
-const SALES_GCASH_COND = "payment_method = 'gcash'";
-const SALES_BANK_COND = "payment_method = 'bank'";
 
 /** Acting user identity: only from authenticated session (never client headers). */
 function getActingUser(req) {
@@ -2429,7 +2431,7 @@ app.patch("/api/orders/:id/pay", requireAnyPermission("accept_payments", "manage
       await conn.rollback();
       return res.status(400).json({ error: "Order already paid" });
     }
-    await conn.execute("UPDATE orders SET status = 'paid', payment_method = ? WHERE id = ?", [paymentMethod || "cash", id]);
+    await conn.execute("UPDATE orders SET status = 'paid', payment_method = ? WHERE id = ?", [normalizePaymentMethod(paymentMethod), id]);
     try {
       await consumeStockForPaidOrderIds(conn, [id]);
     } catch (stockErr) {
@@ -2444,7 +2446,7 @@ app.patch("/api/orders/:id/pay", requireAnyPermission("accept_payments", "manage
       });
     }
     await conn.commit();
-    await logAudit(req, "order_pay", "order", id, { paymentMethod: paymentMethod || "cash", tableId: orders[0].table_id });
+    await logAudit(req, "order_pay", "order", id, { paymentMethod: normalizePaymentMethod(paymentMethod), tableId: orders[0].table_id });
     res.json({ ok: true });
   } catch (err) {
     if (conn) {
@@ -2490,9 +2492,10 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
 
     // Split payment: at least 2 entries provided
     const isSplitPayment = Array.isArray(splits) && splits.length >= 2;
-    const paymentMethodVal = isSplitPayment ? "split_payment" : (paymentMethod || "cash");
+    const paymentMethodVal = isSplitPayment
+      ? "split_payment"
+      : normalizePaymentMethod(paymentMethod || "cash");
     const manualAmountPayment = !isSplitPayment && /^(cash|gcash|bank|debit|credit)$/i.test(paymentMethodVal);
-    const isCashPayment = !isSplitPayment && paymentMethodVal === "cash";
 
     if (!isSplitPayment && paymentMethodVal === "charge") {
       const name = String(customerName || "").trim();
@@ -2588,8 +2591,8 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
     }
     const cardSplitSum = isSplitPayment
       ? (splits || []).reduce((s, sp) => {
-          const m = String(sp.paymentMethod || "").toLowerCase();
-          return m === "credit" || m === "debit" ? s + (Number(sp.amount) || 0) : s;
+          const m = normalizePaymentMethod(sp.paymentMethod || "");
+          return isCardPaymentMethod(m) ? s + (Number(sp.amount) || 0) : s;
         }, 0)
       : 0;
     const cardSplitRatio = paidSum > 0 ? Math.min(1, Math.max(0, cardSplitSum / paidSum)) : 0;
@@ -2608,7 +2611,7 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
       const orderTax = round2(taxableBase * taxRate);
       const baseTotal = round2(taxableBase + orderService + orderTax);
       let orderCardSurcharge = 0;
-      if (!isSplitPayment && (paymentMethodVal === "credit" || paymentMethodVal === "debit")) {
+      if (!isSplitPayment && isCardPaymentMethod(paymentMethodVal)) {
         orderCardSurcharge = round2(baseTotal * cardSurchargeRate);
       } else if (isSplitPayment && cardSplitRatio > 0) {
         orderCardSurcharge = round2(baseTotal * cardSurchargeRate * cardSplitRatio);
@@ -2634,16 +2637,16 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
     }
     const { userId, employeeId, userName } = getActingUser(req);
     try {
-      await closeOpenSessionForTable(conn, branchId, tableId, {
+      await vacateTableIfIdle(conn, branchId, tableId, {
         closedBy: userName || employeeId || "pay-all",
       });
     } catch (sessErr) {
       if (sessErr.code !== "ER_NO_SUCH_TABLE") throw sessErr;
+      await conn.execute(
+        "UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?",
+        [branchId, tableId]
+      );
     }
-    await conn.execute(
-      "UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?",
-      [branchId, tableId]
-    );
     const [paidRows] = await conn.execute(
       "SELECT subtotal, discount, tax, total FROM orders WHERE id IN (" + pendingIds.map(() => "?").join(",") + ")",
       pendingIds
@@ -2657,7 +2660,7 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
       return res.status(400).json({ error: "Split payment amounts must exactly match computed total" });
     }
 
-    // Validate manually entered amount and compute change (cash only)
+    // Validate manually entered amount and compute change
     let changeAmount = 0;
     let receivedAmount = combinedTotal;
     if (manualAmountPayment) {
@@ -2670,7 +2673,7 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
         await conn.rollback();
         return res.status(400).json({ error: "Payment amount is less than amount due" });
       }
-      changeAmount = isCashPayment ? round2(Math.max(0, receivedAmount - combinedTotal)) : 0;
+      changeAmount = round2(Math.max(0, receivedAmount - combinedTotal));
     }
 
     // Handle split payment records
@@ -2681,7 +2684,7 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
         for (let i = 0; i < splits.length; i++) {
           await conn.execute(
             `INSERT INTO split_payments (order_id, split_number, amount, payment_method, status) VALUES (?, ?, ?, ?, 'paid')`,
-            [primaryOrderId, i + 1, splits[i].amount, splits[i].paymentMethod]
+            [primaryOrderId, i + 1, splits[i].amount, normalizePaymentMethod(splits[i].paymentMethod)]
           );
         }
       } catch (_splitErr) {
@@ -2769,7 +2772,7 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
         (itemsByOrder[key] || []).reduce((sum, item) => sum + (item.isComplimentary ? Number(item.subtotal || 0) : 0), 0)
       );
       const isPrimaryOrder = orderIdx === 0;
-      const orderChange = isCashPayment && isPrimaryOrder ? changeAmount : 0;
+      const orderChange = manualAmountPayment && isPrimaryOrder ? changeAmount : 0;
       const orderPaid = manualAmountPayment && isPrimaryOrder ? receivedAmount : orderTotal;
       const receiptPayload = {
         orderNumber: formatOrderDisplayNumber(paidOrder),
@@ -4131,7 +4134,7 @@ app.get("/api/reports/sales", requireAnyPermission("view_reports"), async (req, 
       const chargeableSubtotal = Math.max(0, itemSubtotal - complimentary);
       const taxableBase = Math.max(0, chargeableSubtotal - Number(r.discount || 0));
       const expectedService = computeServiceCharge(taxableBase);
-      if (estimatedCardSurcharge <= 0 && cardSurchargeRate > 0 && method !== "cash" && method !== "gcash" && method !== "bank" && method !== "charge") {
+      if (estimatedCardSurcharge <= 0 && cardSurchargeRate > 0 && method !== "cash" && method !== "gcash" && method !== "bank" && method !== "charge" && method !== "split_payment") {
         const inferred = round2(orderTotal - taxableBase - expectedService - rawTax);
         estimatedCardSurcharge = Math.max(0, inferred);
       }
