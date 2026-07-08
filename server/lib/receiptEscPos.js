@@ -24,8 +24,8 @@ function sizeNormal() {
   return concat(GS, Buffer.from("!"), Buffer.from([0]));
 }
 function cut() {
-  // Feed paper first so printers do not cut text near the bottom.
-  return concat(Buffer.from("\n\n\n\n\n\n", "ascii"), GS, Buffer.from("V"), Buffer.from([65, 0]));
+  // Keep feed tight so thermal cut lands just after content.
+  return concat(Buffer.from("\n\n\n", "ascii"), GS, Buffer.from("V"), Buffer.from([65, 0]));
 }
 function line(w, ch = "-") {
   return Buffer.from(ch.repeat(w) + "\n", "ascii");
@@ -207,15 +207,17 @@ function buildDeptChit({ dept, title, subtitle, items, table: tableStr, area, en
     for (const [lady, ladyItems] of Object.entries(byLady)) {
       b.push(bold(true), ln(`[${lady}]`, width), bold(false));
       for (const item of ladyItems) {
+        const compli = item.isComplimentary ? " (Compli)" : "";
         const note = item.specialRequest ? ` (${item.specialRequest})` : "";
-        pushWrappedLine(b, `${item.quantity}x ${item.name}${note}`, width, "  ");
+        pushWrappedLine(b, `${item.quantity}x ${item.name}${compli}${note}`, width, "  ");
       }
     }
   } else {
     for (const item of items || []) {
+      const compli = item.isComplimentary ? " (Compli)" : "";
       const note = item.specialRequest ? ` (${item.specialRequest})` : "";
       const server = item.servedByName ? ` [${item.servedByName}]` : "";
-      pushWrappedLine(b, `${item.quantity}x ${item.name}${server}${note}`, width);
+      pushWrappedLine(b, `${item.quantity}x ${item.name}${server}${compli}${note}`, width);
     }
   }
   b.push(line(width));
@@ -237,10 +239,11 @@ function buildOrderSlip({ orderId, table: tableStr, area, waiter, date, time, su
   b.push(line(width));
   b.push(bold(true), ln("ITEMS", width), bold(false));
   for (const item of items || []) {
+    const compli = item.isComplimentary ? " (Compli)" : "";
     const note = item.specialRequest ? ` (${item.specialRequest})` : "";
     const server = item.servedByName ? ` [${item.servedByName}]` : "";
     const price = `P${Number(item.subtotal).toFixed(2)}`;
-    const label = cleanText(`${item.quantity}x ${item.name}${server}${note}`);
+    const label = cleanText(`${item.quantity}x ${item.name}${server}${compli}${note}`);
     const labelWidth = Math.max(1, width - price.length - 1);
     const wrappedLabel = wrapText(label, labelWidth);
     const lastLine = wrappedLabel.pop() || "";

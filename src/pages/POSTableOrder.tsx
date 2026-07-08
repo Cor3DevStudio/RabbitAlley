@@ -518,9 +518,9 @@ export default function POSTableOrder() {
           * { box-sizing: border-box; }
           body {
             font-family: 'Courier New', monospace;
-            font-size: 11px;
-            line-height: 1.45;
-            width: 76mm;
+            font-size: 12px;
+            line-height: 1.4;
+            width: 72mm;
             margin: 0 auto;
             padding: 6px 4px 0 4px;
             color: #000;
@@ -546,7 +546,7 @@ export default function POSTableOrder() {
             white-space: nowrap;
             padding-left: 4px;
           }
-          .row.total-row { font-weight: bold; font-size: 12px; }
+          .row.total-row { font-weight: bold; font-size: 13px; }
           .item-note { margin-left: 1.5em; font-size: 10px; color: #444; margin-bottom: 1px; }
           h1 { margin: 0 0 2px 0; font-size: 15px; font-weight: bold; }
           .biz-sub { font-size: 10px; margin: 1px 0; }
@@ -560,7 +560,7 @@ export default function POSTableOrder() {
             margin: 4px 0;
           }
           .footer-note { font-size: 10px; margin: 2px 0; }
-          .bottom-pad { height: 25mm; }
+          .bottom-pad { height: 10mm; }
         </style>
       </head>
       <body>
@@ -699,15 +699,46 @@ export default function POSTableOrder() {
           return;
         }
         const { receipts } = await api.orders.reprintFinalBills(ids, "pos");
-        let anyPrinted = false;
-        for (const entry of receipts) {
-          const printed = await printOfficialReprintReceipt(entry.receipt, entry.orderId);
-          if (printed) anyPrinted = true;
-        }
+        const mergedOrderNumbers = receipts.map((entry) => String(entry.receipt?.orderNumber ?? entry.orderId)).filter(Boolean);
+        const mergedItems = receipts.flatMap((entry) =>
+          Array.isArray(entry.receipt?.items)
+            ? (entry.receipt.items as Array<{ name: string; quantity: number; subtotal: number; note?: string; isComplimentary?: boolean }>)
+            : []
+        );
+        const mergedSubtotal = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.subtotal ?? 0), 0);
+        const mergedComplimentary = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.complimentary ?? 0), 0);
+        const mergedDiscount = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.discount ?? 0), 0);
+        const mergedServiceCharge = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.serviceCharge ?? 0), 0);
+        const mergedTax = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.tax ?? 0), 0);
+        const mergedCardFee = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.cardSurcharge ?? 0), 0);
+        const mergedTotal = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.total ?? 0), 0);
+        const mergedChange = receipts.reduce((sum, entry) => sum + Number(entry.receipt?.change ?? 0), 0);
+        const mergedAmountPaid = mergedTotal + mergedChange;
+        const mergedPaymentMethods = Array.from(
+          new Set(receipts.map((entry) => String(entry.receipt?.originalPaymentMethod ?? entry.receipt?.paymentMethod ?? "")).filter(Boolean))
+        );
+        const baseReceipt = receipts[0]?.receipt ?? {};
+        const mergedReceipt = {
+          ...baseReceipt,
+          orderNumber: formatOrderListLabel(mergedOrderNumbers),
+          items: mergedItems,
+          subtotal: mergedSubtotal,
+          complimentary: mergedComplimentary > 0 ? mergedComplimentary : undefined,
+          discount: mergedDiscount > 0 ? mergedDiscount : undefined,
+          serviceCharge: mergedServiceCharge,
+          tax: mergedTax,
+          cardSurcharge: mergedCardFee > 0 ? mergedCardFee : undefined,
+          total: mergedTotal,
+          amountPaid: mergedAmountPaid,
+          change: mergedChange,
+          paymentMethod: mergedPaymentMethods.length === 1 ? mergedPaymentMethods[0] : "Mixed",
+          originalPaymentMethod: mergedPaymentMethods.length === 1 ? mergedPaymentMethods[0] : "Mixed",
+        };
+        const anyPrinted = await printOfficialReprintReceipt(mergedReceipt as Record<string, unknown>, ids[0]);
         toast.success(
           anyPrinted
-            ? `Final bill reprint sent to printer (${receipts.length} receipt${receipts.length > 1 ? "s" : ""})`
-            : `Final bill reprint opened in browser (${receipts.length} receipt${receipts.length > 1 ? "s" : ""})`
+            ? "Final bill reprint sent to printer"
+            : "Final bill reprint opened in browser"
         );
       } catch (e) {
         const err = e as Error & { data?: { code?: string } };
