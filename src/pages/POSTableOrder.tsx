@@ -369,7 +369,13 @@ export default function POSTableOrder() {
         dept: deptKey,
         title: deptTitle,
         subtitle,
-        items: items.map((i) => ({ name: i.name, quantity: i.quantity, servedByName: i.servedByName, specialRequest: i.specialRequest })),
+        items: items.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          servedByName: i.servedByName,
+          specialRequest: i.specialRequest,
+          isComplimentary: i.isComplimentary,
+        })),
         table: table.name,
         area: table.area,
         encoder: encoderName,
@@ -396,42 +402,141 @@ export default function POSTableOrder() {
     [table, user?.name]
   );
 
+  const buildOrderSlipPayload = useCallback(
+    (items: OrderItem[], orderId: string, opts?: { isReprint?: boolean }) => {
+      const now = new Date();
+      return {
+        orderId,
+        table: table?.name || "",
+        area: table?.area || "",
+        waiter: user?.name || "Staff",
+        date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
+        time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        subtotal: items.reduce((s, i) => s + i.subtotal, 0),
+        isReprint: opts?.isReprint === true,
+        items: items.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          subtotal: i.subtotal,
+          servedByName: i.servedByName,
+          specialRequest: i.specialRequest,
+          isComplimentary: i.isComplimentary,
+        })),
+      };
+    },
+    [table, user?.name]
+  );
+
+  const printOrderSlipPreview = useCallback(
+    async (items: OrderItem[], orderId: string, opts?: { isReprint?: boolean }) => {
+      if (!table || items.length === 0) return false;
+      const slipBody = buildOrderSlipPayload(items, orderId, opts);
+      let html = "";
+      try {
+        html = await api.print.orderSlipHtml(slipBody as Record<string, unknown>);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to load order slip preview");
+        return false;
+      }
+
+      const printWindow = window.open("", "_blank", "width=400,height=1000,scrollbars=yes");
+      if (!printWindow) {
+        toast.error("Print preview was blocked. Allow popups for this site and try again.");
+        return false;
+      }
+
+      printWindow.document.write(html);
+      printWindow.document.close();
+      const triggerPrint = () => {
+        printWindow.onafterprint = () => {
+          try {
+            printWindow.close();
+          } catch {
+            /* no-op */
+          }
+        };
+        printWindow.print();
+      };
+      if (printWindow.document.readyState === "complete") {
+        printWindow.focus();
+        setTimeout(triggerPrint, 120);
+      } else {
+        printWindow.onload = () => {
+          printWindow.focus();
+          setTimeout(triggerPrint, 120);
+        };
+      }
+      return true;
+    },
+    [table, buildOrderSlipPayload]
+  );
+
   // Must be called unconditionally (before any early return) to satisfy Rules of Hooks
   const printCashierOrderSlip = useCallback(
-    async (items: OrderItem[], orderId: string) => {
-      if (!table || items.length === 0) return;
-      const now = new Date();
-      const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
-      const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-      const slipSubtotal = items.reduce((s, i) => s + i.subtotal, 0);
+    async (items: OrderItem[], orderId: string, opts?: { silent?: boolean }) => {
+      if (!table || items.length === 0) return false;
+      const slipBody = buildOrderSlipPayload(items, orderId);
       const printerName = getPrinterForJob("order_slip") || undefined;
       if (!printerName?.trim()) {
-        // None = disabled — skip silently
-        return;
+        if (!opts?.silent) {
+          toast.error(`${PRINT_JOB_LABELS.order_slip} printer not set. Configure in Settings.`);
+        }
+        return false;
       }
-      const slipBody = {
-        orderId,
-        table: table.name,
-        area: table.area,
-        waiter: user?.name || "Staff",
-        date: dateStr,
-        time: timeStr,
-        subtotal: slipSubtotal,
-        items: items.map((i) => ({ name: i.name, quantity: i.quantity, subtotal: i.subtotal, servedByName: i.servedByName, specialRequest: i.specialRequest })),
-      };
       try {
         if (isQzTrayEnabled()) {
           const { base64 } = await api.print.qzPayload.orderSlip(slipBody);
           await qzPrintRawBase64(printerName, base64);
         } else {
-          await api.print.orderSlip({ ...slipBody, printerName });
+          const result = await api.print.orderSlip({ ...slipBody, printerName });
+          if (!result.ok) {
+            if (!opts?.silent) {
+              toast.error(`Order slip not printed: ${result.error || "Printer error"}.`);
+            }
+            return false;
+          }
         }
-      } catch {
-        // silently skip — order was still sent, slip is optional
+        return true;
+      } catch (e) {
+        if (!opts?.silent) {
+          toast.error(
+            `Order slip not printed: ${e instanceof Error ? e.message : "Check QZ Tray is running and printer name matches Settings."}`
+          );
+        }
+        return false;
       }
     },
-    [table, user?.name]
+    [table, buildOrderSlipPayload]
   );
+
+  const handleReprintOrderSlip = useCallback(async () => {
+    const tab = orderTabs[activeTabIndex];
+    if (!tab?.sent || !tab.id) {
+      toast.error("Select a sent order tab to reprint its order slip");
+      return;
+    }
+    const printableItems = tab.items.filter((item) => !item.isVoided);
+    if (printableItems.length === 0) {
+      toast.error("No items on this order to print");
+      return;
+    }
+    const orderNumber = formatOrderDisplayNumber(tab.orderNumber, tab.id);
+    const tabLabel = formatOrderTabLabel(tab.orderNumber, tab.id);
+    const previewOpened = await printOrderSlipPreview(printableItems, orderNumber, { isReprint: true });
+    if (!previewOpened) return;
+
+    const printerName = getPrinterForJob("order_slip");
+    if (printerName?.trim()) {
+      const printed = await printCashierOrderSlip(printableItems, orderNumber, { silent: true });
+      toast.success(
+        printed
+          ? `Order slip preview opened and sent to printer (${tabLabel})`
+          : `Order slip preview opened (${tabLabel}). Thermal print failed — use browser Print.`
+      );
+      return;
+    }
+    toast.info(`Order slip preview opened (${tabLabel}). Select your printer in the dialog.`);
+  }, [orderTabs, activeTabIndex, printOrderSlipPreview, printCashierOrderSlip]);
 
   const orderTabRows = useMemo(() => {
     const rows: Array<Array<{ tab: OrderTab; idx: number }>> = [];
@@ -1043,7 +1148,7 @@ export default function POSTableOrder() {
         printDelay += 500;
       }
       // Cashier order slip (for customer to verify & sign)
-      setTimeout(() => printCashierOrderSlip(itemsToSend, createdOrderNumber), printDelay);
+      setTimeout(() => void printCashierOrderSlip(itemsToSend, createdOrderNumber, { silent: true }), printDelay);
       printDelay += 500;
 
       // Auto-logout waiter after send (role from API is lowercase with underscore, e.g. staff, operations_staff)
@@ -1784,17 +1889,6 @@ export default function POSTableOrder() {
             <span className="text-sm font-medium">
               {orderSent ? "Sent" : "Adding items"}
             </span>
-            {lastPaidOrderIds.length > 0 && canReprintFinalBill && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void handleReprintFinalBill()}
-                title="Reprint final bill (official receipt copy)"
-              >
-                <Printer className="w-4 h-4 mr-1" />
-                Reprint Final Bill
-              </Button>
-            )}
           </div>
 
           {/* Order Items - Scrollable */}
@@ -1945,7 +2039,7 @@ export default function POSTableOrder() {
           </div>
 
           {/* Actions: Staff sends to dept, Cashier/Admin process payment */}
-          {(canSendToDept || canProcessPayment || canRequestVoid) && (
+          {(canSendToDept || canProcessPayment || canRequestVoid || canPrintReceipt || canReprintFinalBill) && (
             <div className="grid gap-2 mt-4 shrink-0 grid-cols-1 sm:grid-cols-2">
               {canSendToDept && !orderSent && (
                 <Button 
@@ -1995,6 +2089,36 @@ export default function POSTableOrder() {
                   onClick={openVoidModal}
                 >
                   Request Void
+                </Button>
+              )}
+              {(canPrintReceipt || canProcessPayment) && (
+                <Button
+                  variant="outline"
+                  disabled={!orderSent || orderItems.filter((item) => !item.isVoided).length === 0}
+                  onClick={() => void handleReprintOrderSlip()}
+                  title={
+                    !orderSent
+                      ? "Select a sent order tab first"
+                      : "Preview and reprint order slip for the selected order (for signing after void)"
+                  }
+                >
+                  <Receipt className="w-4 h-4 mr-2" />
+                  Reprint Order Slip
+                </Button>
+              )}
+              {canReprintFinalBill && (
+                <Button
+                  variant="outline"
+                  disabled={lastPaidOrderIds.length === 0}
+                  onClick={() => void handleReprintFinalBill()}
+                  title={
+                    lastPaidOrderIds.length === 0
+                      ? "Complete payment first to reprint the final bill"
+                      : "Reprint final bill (official receipt copy)"
+                  }
+                >
+                  <Printer className="w-4 h-4 mr-2" />
+                  Reprint Final Bill
                 </Button>
               )}
             </div>

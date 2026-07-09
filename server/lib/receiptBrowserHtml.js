@@ -160,4 +160,81 @@ function buildRunningBillHtml(body) {
 </html>`;
 }
 
-export { escapeHtml, buildCustomerReceiptHtml, buildRunningBillHtml };
+function buildOrderSlipHtml(body) {
+  const isReprint = body.isReprint === true || body.isReprint === 1 || body.isReprint === "1";
+  const itemRows = (body.items || [])
+    .map((item) => {
+      const compli = item.isComplimentary ? " (Compli)" : "";
+      const note = item.specialRequest ? ` (${escapeHtml(item.specialRequest)})` : "";
+      const server = item.servedByName ? ` [${escapeHtml(item.servedByName)}]` : "";
+      return `<tr>
+        <td>${escapeHtml(item.quantity)}x ${escapeHtml(item.name)}${server}${compli}${note}</td>
+        <td class="num">${formatMoney(item.subtotal)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Order Slip ${escapeHtml(body.orderId || "")}</title>
+  <style>
+    @page { size: 80mm auto; margin: 3mm 2mm 8mm 2mm; }
+    @media print {
+      html, body { height: auto !important; overflow: visible !important; }
+      .no-break { page-break-inside: avoid; }
+    }
+    body {
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      width: 72mm;
+      margin: 0 auto;
+      padding: 6px 4px 0 4px;
+      color: #000;
+      background: #fff;
+    }
+    .center { text-align: center; }
+    .bold { font-weight: 700; }
+    .line { border: none; border-top: 1px dashed #000; margin: 6px 0; }
+    .row { display: flex; justify-content: space-between; gap: 6px; margin: 2px 0; }
+    .row.total { font-weight: 700; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin: 4px 0; }
+    td { padding: 2px 0; vertical-align: top; word-break: break-word; }
+    td.num { text-align: right; white-space: nowrap; }
+    .note { font-size: 10px; color: #555; margin-top: 4px; }
+    .reprint { font-weight: 700; letter-spacing: 0.08em; margin: 4px 0; }
+    .signature { margin-top: 10px; }
+    .bottom-pad { height: 10mm; }
+  </style>
+</head>
+<body>
+  <div class="center no-break">
+    <div class="bold" style="font-size:14px;">RABBIT ALLEY</div>
+    <div>Bar &amp; Restaurant</div>
+    <div class="line"></div>
+    ${isReprint ? `<div class="reprint">** REPRINT COPY **</div>` : ""}
+    <div class="bold">ORDER SLIP</div>
+  </div>
+  <div>Order : ${escapeHtml(body.orderId || "")}</div>
+  <div>${escapeHtml(body.date || "")}  ${escapeHtml(body.time || "")}  ${escapeHtml(body.area || "")} T${escapeHtml(body.table || "")}</div>
+  <div>Waiter: ${escapeHtml(body.waiter || "")}</div>
+  <div class="line"></div>
+  <div class="bold">ITEMS</div>
+  <table><tbody>${itemRows}</tbody></table>
+  <div class="line"></div>
+  <div class="row total"><span>SUBTOTAL:</span><span>${formatMoney(body.subtotal)}</span></div>
+  <div class="line"></div>
+  <div class="center note no-break">
+    <div>Not official receipt.</div>
+    <div>Subject to tax &amp; service charge.</div>
+    <div class="signature">Signature: ____________________</div>
+    ${isReprint ? `<div class="reprint" style="margin-top:6px;">** REPRINT — FOR SIGNING **</div>` : ""}
+  </div>
+  <div class="bottom-pad"></div>
+</body>
+</html>`;
+}
+
+export { escapeHtml, buildCustomerReceiptHtml, buildRunningBillHtml, buildOrderSlipHtml };

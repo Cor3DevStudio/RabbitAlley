@@ -837,6 +837,7 @@ export const api = {
       fetchApi<{ ok: boolean; error?: string; fallback?: boolean }>("/api/print/running-bill", { method: "POST", body: JSON.stringify(body) }),
     receiptHtml: (receipt: Record<string, unknown>) => fetchPrintHtml("/api/print/receipt-html", { receipt }),
     runningBillHtml: (body: Record<string, unknown>) => fetchPrintHtml("/api/print/running-bill-html", body),
+    orderSlipHtml: (body: Record<string, unknown>) => fetchPrintHtml("/api/print/order-slip-html", body),
     /** ESC/POS base64 for QZ Tray (browser → local USB thermal) */
     qzPayload: {
       receipt: (receipt: Record<string, unknown>) =>

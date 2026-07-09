@@ -25,7 +25,7 @@ import mysql from "mysql2/promise";
 import ThermalPrinter from "node-thermal-printer";
 import { buildCustomerReceipt, buildDeptChit, buildOrderSlip, buildRunningBill, buildPayslip } from "./lib/receiptEscPos.js";
 import { printEscPosBuffer, resolvePrinterInterface } from "./lib/printToThermal.js";
-import { buildCustomerReceiptHtml, buildRunningBillHtml } from "./lib/receiptBrowserHtml.js";
+import { buildCustomerReceiptHtml, buildRunningBillHtml, buildOrderSlipHtml } from "./lib/receiptBrowserHtml.js";
 import { computePayslipGross, computePayslipNet } from "./lib/payrollTotals.js";
 import { allocateOrderNumber, formatOrderDisplayNumber } from "./lib/orderNumbers.js";
 import {
@@ -2959,6 +2959,12 @@ app.post("/api/print/running-bill-html", requireAnyPermission("print_receipts", 
   const body = req.body || {};
   if (!body.items || !Array.isArray(body.items)) return res.status(400).json({ error: "items required" });
   res.type("html").send(buildRunningBillHtml(body));
+});
+
+app.post("/api/print/order-slip-html", requireAnyPermission("print_receipts", "view_orders", "send_to_departments", "manage_pos"), (req, res) => {
+  const body = req.body || {};
+  if (!body.items || !Array.isArray(body.items)) return res.status(400).json({ error: "items required" });
+  res.type("html").send(buildOrderSlipHtml(body));
 });
 
 // ---------- Print Department Chit (Kitchen / Bar / LD) ----------
