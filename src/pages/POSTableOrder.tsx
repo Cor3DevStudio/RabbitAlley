@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
@@ -164,6 +164,35 @@ export default function POSTableOrder() {
   useEffect(() => {
     setLastPaidOrderIds([]);
   }, [tableId]);
+
+  // Table is "In use" only while ordering: claim on first draft item, release when
+  // the draft cart becomes empty again (or on leave via releaseOnLeave). Opening /
+  // browsing alone must not lock the floor grid. Do not remove — without claim-on-
+  // punch + release-on-empty, tables stick as "In use" after browse-and-back or a
+  // cancelled draft. Skipped once any order is sent; backend also no-ops release
+  // when a real pending order exists (occupied path untouched).
+  const hadUnsentItemsRef = useRef(false);
+  useEffect(() => {
+    if (!tableId) {
+      hadUnsentItemsRef.current = false;
+      return;
+    }
+    const hasAnySentOrder = orderTabs.some((t) => t.sent);
+    const unsentItemCount = orderTabs
+      .filter((t) => !t.sent)
+      .reduce((sum, t) => sum + t.items.length, 0);
+    const hasUnsentItems = unsentItemCount > 0;
+
+    if (!hadUnsentItemsRef.current && hasUnsentItems && !hasAnySentOrder) {
+      void api.pos.claimTable(tableId).catch((err: Error) => {
+        toast.error(err.message || "Could not claim this table");
+      });
+    } else if (hadUnsentItemsRef.current && !hasUnsentItems && !hasAnySentOrder) {
+      void api.pos.releaseTable(tableId).catch(() => {});
+    }
+    hadUnsentItemsRef.current = hasUnsentItems;
+  }, [tableId, orderTabs]);
+
   const [voidModalOpen, setVoidModalOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
   const [voidEmployeeId, setVoidEmployeeId] = useState("");

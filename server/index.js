@@ -2171,13 +2171,17 @@ app.post(
 );
 
 // Table + pending orders in one round trip (POS table order screen).
+// Floor waiters may browse without locking — claim happens when they start adding items.
 app.get("/api/pos/tables/:tableId/session", requireAnyPermission("view_orders", "create_orders", "manage_pos"), async (req, res) => {
   const { tableId } = req.params;
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
     if (isFloorWaiter(req.authUser)) {
-      await claimTableForWaiter(db, branchId, tableId, req.authUser.employeeId);
+      await assertWaiterOwnsTable(db, branchId, tableId, req.authUser.employeeId);
+      // Opening alone must not leave the table "In use". Clear a stale idle claim
+      // (e.g. leftover from a previous session) so browse-and-back stays Available.
+      await releaseTableClaimIfIdle(db, branchId, tableId, req.authUser.employeeId);
     }
     const [tableRows] = await db.execute(
       "SELECT id, name, area, status, current_order_id AS currentOrderId FROM pos_tables WHERE branch_id = ? AND id = ?",
@@ -2206,6 +2210,25 @@ app.get("/api/pos/tables/:tableId/session", requireAnyPermission("view_orders", 
     if (err.status === 403) return res.status(403).json({ error: err.message });
     console.error("Table session error:", err);
     res.status(500).json({ error: "Failed to load table session" });
+  }
+});
+
+/** POST — claim table when waiter starts adding items (not on open/browse). */
+app.post("/api/pos/tables/:tableId/claim", requireAnyPermission("create_orders", "manage_pos"), async (req, res) => {
+  const { tableId } = req.params;
+  const branchId = getBranchId(req);
+  if (!isFloorWaiter(req.authUser)) {
+    return res.json({ ok: true, claimed: false });
+  }
+  try {
+    const db = await getPool();
+    const sessionId = await claimTableForWaiter(db, branchId, tableId, req.authUser.employeeId);
+    res.json({ ok: true, claimed: true, sessionId });
+  } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message });
+    if (err.status === 400) return res.status(400).json({ error: err.message });
+    console.error("Table claim error:", err);
+    res.status(500).json({ error: "Failed to claim table" });
   }
 });
 
@@ -2344,7 +2367,7 @@ app.patch("/api/order-items/:id/void", requireAnyPermission("request_voids", "ap
     const db = await getPool();
     const manager = await verifyManagerForVoid(db, employeeId, password);
     const [items] = await db.execute(
-      "SELECT oi.id, oi.order_id, o.subtotal FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id = ? AND o.branch_id = ?",
+      "SELECT oi.id, oi.order_id, o.subtotal, o.table_id FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE oi.id = ? AND o.branch_id = ?",
       [itemId, branchId]
     );
     if (!items.length) return res.status(404).json({ error: "Item not found" });
@@ -2367,8 +2390,32 @@ app.patch("/api/order-items/:id/void", requireAnyPermission("request_voids", "ap
         [manager.id, manager.name, itemId]
       );
       const orderId = items[0].order_id;
+      const tableId = items[0].table_id;
       const settings = await loadPosFinancialSettings(db);
       await updateOrderTotalsFromItems(db, orderId, settings);
+
+      // If every item on this order is now voided, treat like a full order void so
+      // vacateTableIfIdle can free the table (it only skips orders with voided_at set).
+      const [liveItems] = await db.execute(
+        "SELECT id FROM order_items WHERE order_id = ? AND COALESCE(is_voided, 0) = 0 LIMIT 1",
+        [orderId]
+      );
+      if (!liveItems.length) {
+        try {
+          await db.execute(
+            "UPDATE orders SET voided_at = NOW(), voided_by = ?, voided_by_name = ?, subtotal = 0, discount = 0, tax = 0, total = 0 WHERE id = ? AND voided_at IS NULL",
+            [manager.id, manager.name, orderId]
+          );
+        } catch (e) {
+          if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+        }
+        if (tableId) {
+          await reconcileTableVisitIds(db, branchId, tableId);
+          await vacateTableIfIdle(db, branchId, tableId, {
+            closedBy: manager.name || "void",
+          });
+        }
+      }
     } catch (e) {
       if (e.code === "ER_BAD_FIELD_ERROR") return res.status(500).json({ error: "Void not supported: run schema migration for void columns" });
       throw e;
