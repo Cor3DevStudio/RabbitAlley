@@ -247,44 +247,6 @@ function startChrome() {
   });
 }
 
-/** Run the clean-db-on-start script synchronously before the backend starts.
- *  Daily reset: clears Sales, Product, and Void report tables so each day starts fresh. */
-async function resetDatabaseOnStart() {
-  const cleanScript = path.join(__dirname, 'server', 'scripts', 'clean-db-on-start.js');
-  if (!fs.existsSync(cleanScript)) {
-    log.warn('clean-db-on-start.js not found — skipping daily report reset.');
-    return;
-  }
-  log.info('Daily reset: Sales, Product, and Void report data...');
-  return new Promise((resolve) => {
-    const proc = spawn('node', [cleanScript], {
-      cwd: path.join(__dirname, 'server'),
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    proc.stdout.on('data', (d) => {
-      const line = d.toString().trim();
-      if (line) console.log(`  \x1b[90m[DB-RESET]\x1b[0m ${line}`);
-    });
-    proc.stderr.on('data', (d) => {
-      const line = d.toString().trim();
-      if (line) console.log(`  \x1b[33m[DB-RESET]\x1b[0m ${line}`);
-    });
-    proc.on('exit', (code) => {
-      if (code === 0) {
-        log.success('Daily report reset complete — Sales, Product, and Void start fresh.');
-      } else {
-        log.warn(`DB reset exited with code ${code}. Continuing startup anyway.`);
-      }
-      resolve();
-    });
-    proc.on('error', (err) => {
-      log.warn(`DB reset error: ${err.message}. Continuing startup anyway.`);
-      resolve();
-    });
-  });
-}
-
 // Main entry point
 async function main() {
   console.log('\n==========================================');
@@ -295,7 +257,6 @@ async function main() {
   console.log('        the entire POS system.\n');
 
   try {
-    await resetDatabaseOnStart();
     await startBackend();
     await startFrontend();
     await waitForFrontendReady();

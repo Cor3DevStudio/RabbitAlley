@@ -77,26 +77,6 @@ echo  [INFO] API server port : %API_PORT%
 echo  [INFO] Frontend port   : %VITE_PORT%
 echo.
 
-:: ---- Daily reset: Sales, Product, Void reports (enabled by default) ----
-set "DO_CLEAN_DB=1"
-if /I "%~1"=="noclean" set "DO_CLEAN_DB=0"
-
-if "%DO_CLEAN_DB%"=="1" (
-    echo  [CLEAN] Daily reset: Sales, Product, and Void report data...
-    cd server
-    node scripts/clean-db-on-start.js
-    set "CLEAN_EXIT=!errorlevel!"
-    cd ..
-    if !CLEAN_EXIT! neq 0 (
-        echo  [WARN] Clean-db failed. Check MySQL is running and server\.env. Continuing...
-    ) else (
-        echo  [OK] Daily report reset complete.
-    )
-) else (
-    echo  [INFO] Daily report reset skipped ^(noclean^). Yesterday's data is still in the database.
-)
-echo.
-
 :: ---- Start API Server in a new window ----
 echo  [START] Launching API server...
 start "Rabbit Alley - API Server" cmd /k "cd /d %~dp0server && node index.js"
