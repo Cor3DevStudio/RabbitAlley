@@ -214,7 +214,7 @@ function buildOrderSlipHtml(body) {
     <div class="bold" style="font-size:14px;">RABBIT ALLEY</div>
     <div>Bar &amp; Restaurant</div>
     <div class="line"></div>
-    ${isReprint ? `<div class="reprint">** REPRINT COPY **</div>` : ""}
+    ${isReprint ? `<div class="reprint">** REPRINT — FOR SIGNING **</div>` : ""}
     <div class="bold">ORDER SLIP</div>
   </div>
   <div>Order : ${escapeHtml(body.orderId || "")}</div>
@@ -230,7 +230,6 @@ function buildOrderSlipHtml(body) {
     <div>Not official receipt.</div>
     <div>Subject to tax &amp; service charge.</div>
     <div class="signature">Signature: ____________________</div>
-    ${isReprint ? `<div class="reprint" style="margin-top:6px;">** REPRINT — FOR SIGNING **</div>` : ""}
   </div>
   <div class="bottom-pad"></div>
 </body>

@@ -1,24 +1,29 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
 // Rabbit Alley POS - Vite Configuration
 // Powered by CoreDev Studio
-export default defineConfig(() => ({
-  server: {
-    host: "::",
-    port: 8080,
-    hmr: {
-      overlay: false,
-    },
-    proxy: {
-      "/api": {
-        target: "http://localhost:8000",
-        changeOrigin: true,
+export default defineConfig(({ mode }) => {
+  const env = { ...process.env, ...loadEnv(mode, process.cwd(), "") };
+  const frontendPort = parseInt(env.PORT || env.VITE_PORT || "8080", 10);
+  const backendPort = parseInt(env.API_PORT || "8000", 10);
+
+  return {
+    server: {
+      host: "::",
+      port: frontendPort,
+      hmr: {
+        overlay: false,
+      },
+      proxy: {
+        "/api": {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+        },
       },
     },
-  },
-  plugins: [react()],
+    plugins: [react()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -50,4 +55,6 @@ export default defineConfig(() => ({
   optimizeDeps: {
     include: ["react", "react-dom", "react-router-dom"],
   },
-}));
+};
+});
+

@@ -227,10 +227,15 @@ function buildDeptChit({ dept, title, subtitle, items, table: tableStr, area, en
   return Buffer.concat(b);
 }
 
-function buildOrderSlip({ orderId, table: tableStr, area, waiter, date, time, subtotal, items }, width = 42) {
+function buildOrderSlip({ orderId, table: tableStr, area, waiter, date, time, subtotal, items, isReprint }, width = 42) {
+  const reprint =
+    isReprint === true || isReprint === 1 || isReprint === "1";
   const b = [init(), align(1), bold(true), ln("RABBIT ALLEY", width), bold(false)];
   b.push(ln("Bar & Restaurant", width));
   b.push(line(width));
+  if (reprint) {
+    b.push(bold(true), ln("** REPRINT — FOR SIGNING **", width), bold(false));
+  }
   b.push(bold(true), ln("ORDER SLIP", width), bold(false));
   b.push(align(0));
   b.push(ln(`Order : ${orderId || ""}`, width));

@@ -819,6 +819,7 @@ export const api = {
       subtotal: number;
       items: Array<{ name: string; quantity: number; subtotal: number; servedByName?: string | null; specialRequest?: string | null }>;
       printerName?: string | null;
+      isReprint?: boolean;
     }) =>
       fetchApi<{ ok: boolean; error?: string }>("/api/print/order-slip", {
         method: "POST",

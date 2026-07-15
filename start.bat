@@ -62,28 +62,45 @@ if not exist "server\.env" (
     echo.
 )
 
-:: ---- Read API port from server/.env (default 8000) ----
+:: ---- Read port configurations ----
+set "VITE_PORT=8080"
 set "API_PORT=8000"
-for /f "usebackq tokens=1,2 delims==" %%A in ("server\.env") do (
-    if "%%A"=="PORT" set "API_PORT=%%B"
-)
-:: Trim spaces from port value
-set "API_PORT=%API_PORT: =%"
 
-:: ---- Read Vite port (default 5173) ----
-set "VITE_PORT=5173"
+:: Read root .env
+if exist ".env" (
+    for /f "usebackq tokens=1,2 delims==" %%A in (".env") do (
+        if "%%A"=="PORT" set "VITE_PORT=%%B"
+        if "%%A"=="VITE_PORT" set "VITE_PORT=%%B"
+        if "%%A"=="API_PORT" set "API_PORT=%%B"
+    )
+)
+
+:: Read server/.env
+if exist "server\.env" (
+    for /f "usebackq tokens=1,2 delims==" %%A in ("server\.env") do (
+        if "%%A"=="PORT" set "API_PORT=%%B"
+    )
+)
+
+:: Trim spaces from port values
+set "API_PORT=%API_PORT: =%"
+set "VITE_PORT=%VITE_PORT: =%"
+
+:: CLI args override (usage: start.bat 8085 8005)
+if "%~1" neq "" set "VITE_PORT=%~1"
+if "%~2" neq "" set "API_PORT=%~2"
 
 echo  [INFO] API server port : %API_PORT%
 echo  [INFO] Frontend port   : %VITE_PORT%
 echo.
 
 :: ---- Start API Server in a new window ----
-echo  [START] Launching API server...
-start "Rabbit Alley - API Server" cmd /k "cd /d %~dp0server && node index.js"
+echo  [START] Launching API server on port %API_PORT%...
+start "Rabbit Alley - API Server" cmd /k "cd /d %~dp0server && set PORT=%API_PORT% && node index.js"
 
 :: ---- Start Vite Frontend in a new window ----
-echo  [START] Launching frontend dev server...
-start "Rabbit Alley - Frontend" cmd /k "cd /d %~dp0 && npm run dev"
+echo  [START] Launching frontend dev server on port %VITE_PORT%...
+start "Rabbit Alley - Frontend" cmd /k "cd /d %~dp0 && set PORT=%VITE_PORT% && set API_PORT=%API_PORT% && npm run dev"
 
 :: ---- Wait for servers to warm up ----
 echo.

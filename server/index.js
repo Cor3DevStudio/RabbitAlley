@@ -3050,7 +3050,7 @@ app.post("/api/print/dept-receipt", requireAnyPermission("print_receipts", "send
 
 // ---------- Print Order Slip (cashier chit sent to Bar/cashier printer) ----------
 app.post("/api/print/order-slip", requireAnyPermission("print_receipts", "send_to_departments", "manage_pos"), async (req, res) => {
-  const { orderId, table: tableStr, area, waiter, date, time, subtotal, items, printerName } = req.body || {};
+  const { orderId, table: tableStr, area, waiter, date, time, subtotal, items, printerName, isReprint } = req.body || {};
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "items required" });
 
   const driver = getPrinterDriver();
@@ -3060,7 +3060,7 @@ app.post("/api/print/order-slip", requireAnyPermission("print_receipts", "send_t
   if (!interfaceToUse) return res.json({ ok: false, error: "No printer configured." });
 
   try {
-    const buf = buildOrderSlip({ orderId, table: tableStr, area, waiter, date, time, subtotal, items });
+    const buf = buildOrderSlip({ orderId, table: tableStr, area, waiter, date, time, subtotal, items, isReprint });
     const result = await printEscPosBuffer(buf, {
       printerType: PRINTER_TYPE,
       printerInterface: interfaceToUse,
@@ -4254,7 +4254,8 @@ app.get("/api/reports/sales", requireAnyPermission("view_reports"), async (req, 
       const allPaid = ordList.every((x) => x.status === "paid");
       const anyPending = ordList.some((x) => x.status === "pending");
       const sessionStatus = head.sessionStatus || (allPaid ? "closed" : anyPending ? "open" : "closed");
-      const status = sessionStatus === "open" || anyPending ? (allPaid ? "paid" : "pending") : "paid";
+      // Session stays pending while any order is unpaid; paid only when every order is paid.
+      const status = allPaid ? "paid" : "pending";
       const openedMs = head.sessionOpenedAt ? new Date(head.sessionOpenedAt).getTime() : Math.min(...ordList.map((x) => x.timeMs));
       const closedMs = head.sessionClosedAt
         ? new Date(head.sessionClosedAt).getTime()

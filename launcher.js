@@ -20,9 +20,60 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Helper to parse .env files without dependencies
+function parseEnvFile(filePath) {
+  const env = {};
+  if (fs.existsSync(filePath)) {
+    try {
+      const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const match = trimmed.match(/^([^=]+)=(.*)$/);
+        if (match) {
+          const key = match[1].trim();
+          let val = match[2].trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          env[key] = val;
+        }
+      }
+    } catch (e) {
+      // Ignore errors parsing config
+    }
+  }
+  return env;
+}
+
+// Load env files
+const rootEnv = parseEnvFile(path.join(__dirname, '.env'));
+const serverEnv = parseEnvFile(path.join(__dirname, 'server', '.env'));
+
+// Parse CLI args (e.g. node launcher.js 8081 8001 or --port=8081 --api-port=8001)
+let customFrontendPort = '';
+let customBackendPort = '';
+
+process.argv.slice(2).forEach(arg => {
+  if (arg.startsWith('--port=')) {
+    customFrontendPort = arg.split('=')[1];
+  } else if (arg.startsWith('--api-port=')) {
+    customBackendPort = arg.split('=')[1];
+  } else if (/^\d+$/.test(arg)) {
+    if (!customFrontendPort) {
+      customFrontendPort = arg;
+    } else if (!customBackendPort) {
+      customBackendPort = arg;
+    }
+  }
+});
+
+const frontendPort = customFrontendPort || process.env.PORT || process.env.VITE_PORT || rootEnv.PORT || rootEnv.VITE_PORT || '8080';
+const backendPort = customBackendPort || process.env.API_PORT || rootEnv.API_PORT || serverEnv.PORT || '8000';
+
 // Configuration
 const CONFIG = {
-  POS_URL: 'http://localhost:8080',
+  POS_URL: `http://localhost:${frontendPort}`,
   BACKEND_DELAY: 3000,       // Wait 3s for backend to start
   FRONTEND_POLL_MS: 500,     // Poll every 500ms for frontend ready
   FRONTEND_MAX_WAIT_MS: 60000, // Give up after 60s
@@ -129,13 +180,14 @@ function shutdown(reason) {
 // Start backend server
 function startBackend() {
   return new Promise((resolve) => {
-    log.info('Starting backend server...');
+    log.info(`Starting backend server on port ${backendPort}...`);
     
     const serverDir = path.join(__dirname, 'server');
     processes.backend = spawn('npm', ['run', 'dev'], {
       cwd: serverDir,
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PORT: backendPort },
     });
 
     processes.backend.stdout.on('data', (data) => {
@@ -167,12 +219,13 @@ function startBackend() {
 // Start frontend server
 function startFrontend() {
   return new Promise((resolve) => {
-    log.info('Starting frontend server...');
+    log.info(`Starting frontend server on port ${frontendPort}...`);
     
     processes.frontend = spawn('npm', ['run', 'dev'], {
       cwd: __dirname,
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PORT: frontendPort, API_PORT: backendPort },
     });
 
     processes.frontend.stdout.on('data', (data) => {
@@ -252,6 +305,10 @@ async function main() {
   console.log('\n==========================================');
   console.log('  Rabbit Alley POS - System Launcher');
   console.log('  Powered by CoreDev Studio');
+  console.log('==========================================\n');
+  console.log(`  Configured ports:`);
+  console.log(`  - Frontend: ${frontendPort} (UI)`);
+  console.log(`  - Backend : ${backendPort} (API)`);
   console.log('==========================================\n');
   console.log('  NOTE: Closing ANY window will shutdown');
   console.log('        the entire POS system.\n');

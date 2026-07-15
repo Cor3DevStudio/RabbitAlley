@@ -502,9 +502,9 @@ export default function POSTableOrder() {
 
   // Must be called unconditionally (before any early return) to satisfy Rules of Hooks
   const printCashierOrderSlip = useCallback(
-    async (items: OrderItem[], orderId: string, opts?: { silent?: boolean }) => {
+    async (items: OrderItem[], orderId: string, opts?: { silent?: boolean; isReprint?: boolean }) => {
       if (!table || items.length === 0) return false;
-      const slipBody = buildOrderSlipPayload(items, orderId);
+      const slipBody = buildOrderSlipPayload(items, orderId, { isReprint: opts?.isReprint === true });
       const printerName = getPrinterForJob("order_slip") || undefined;
       if (!printerName?.trim()) {
         if (!opts?.silent) {
@@ -551,20 +551,25 @@ export default function POSTableOrder() {
     }
     const orderNumber = formatOrderDisplayNumber(tab.orderNumber, tab.id);
     const tabLabel = formatOrderTabLabel(tab.orderNumber, tab.id);
-    const previewOpened = await printOrderSlipPreview(printableItems, orderNumber, { isReprint: true });
-    if (!previewOpened) return;
 
+    // Print once: thermal when configured, otherwise browser preview. Never both (double print).
     const printerName = getPrinterForJob("order_slip");
     if (printerName?.trim()) {
-      const printed = await printCashierOrderSlip(printableItems, orderNumber, { silent: true });
-      toast.success(
-        printed
-          ? `Order slip preview opened and sent to printer (${tabLabel})`
-          : `Order slip preview opened (${tabLabel}). Thermal print failed — use browser Print.`
-      );
-      return;
+      const printed = await printCashierOrderSlip(printableItems, orderNumber, {
+        silent: true,
+        isReprint: true,
+      });
+      if (printed) {
+        toast.success(`Order slip reprinted (${tabLabel})`);
+        return;
+      }
+      toast.warning(`Thermal reprint failed (${tabLabel}). Opening browser preview…`);
     }
-    toast.info(`Order slip preview opened (${tabLabel}). Select your printer in the dialog.`);
+
+    const previewOpened = await printOrderSlipPreview(printableItems, orderNumber, { isReprint: true });
+    if (previewOpened) {
+      toast.info(`Order slip preview opened (${tabLabel}). Select your printer in the dialog.`);
+    }
   }, [orderTabs, activeTabIndex, printOrderSlipPreview, printCashierOrderSlip]);
 
   const orderTabRows = useMemo(() => {
@@ -2128,7 +2133,7 @@ export default function POSTableOrder() {
                   title={
                     !orderSent
                       ? "Select a sent order tab first"
-                      : "Preview and reprint order slip for the selected order (for signing after void)"
+                      : "Reprint order slip for the selected order (for signing after void)"
                   }
                 >
                   <Receipt className="w-4 h-4 mr-2" />
