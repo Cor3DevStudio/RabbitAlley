@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Rabbit Alley POS - API (MySQL)
  * Auth: POST /api/auth/login
  * Dashboard: GET /api/dashboard/stats, GET /api/dashboard/tables
@@ -81,6 +81,7 @@ import {
   backfillLegacyVoids,
   normalizeVoidReason,
 } from "./lib/voidLog.js";
+import { createDatabaseBackup, listBackups } from "./lib/backup.js";
 
 const INSECURE_AUTH_TOKEN_SECRET = "rabbit-alley-pos-change-this-secret";
 
@@ -4362,7 +4363,7 @@ app.get("/api/reports/products", requireAnyPermission("view_reports"), async (re
     sessionId != null && String(sessionId).trim() !== "" && Number.isFinite(Number(sessionId))
       ? Number(sessionId)
       : null;
-  const sortField = String(sortBy || "revenue").toLowerCase() === "quantity" ? "quantity" : "revenue";
+  const sortByVal = String(sortBy || "revenue").toLowerCase();
   const sortAscending = String(sortDir || "desc").toLowerCase() === "asc";
 
   try {
@@ -4381,8 +4382,9 @@ app.get("/api/reports/products", requireAnyPermission("view_reports"), async (re
     }
     let filterSql = ` AND o.status = 'paid' AND o.voided_at IS NULL AND COALESCE(oi.is_voided, 0) = 0`;
     if (filterSku) {
-      filterSql += ` AND (oi.product_sku = ? OR p.sku = ?)`;
-      params.push(filterSku, filterSku);
+      filterSql += ` AND (oi.product_sku LIKE ? OR p.sku LIKE ? OR p.name LIKE ? OR oi.product_name LIKE ?)`;
+      const likeFilter = `%${filterSku}%`;
+      params.push(likeFilter, likeFilter, likeFilter, likeFilter);
     }
     if (filterCategory) {
       filterSql += ` AND p.category = ?`;
@@ -4436,8 +4438,9 @@ app.get("/api/reports/products", requireAnyPermission("view_reports"), async (re
       }
       let legacyFilter = ` AND o.status = 'paid' AND COALESCE(oi.is_voided, 0) = 0`;
       if (filterSku) {
-        legacyFilter += ` AND p.sku = ?`;
-        legacyParams.push(filterSku);
+        legacyFilter += ` AND (p.sku LIKE ? OR p.name LIKE ? OR oi.product_name LIKE ?)`;
+        const likeFilter = `%${filterSku}%`;
+        legacyParams.push(likeFilter, likeFilter, likeFilter);
       }
       if (filterCategory) {
         legacyFilter += ` AND p.category = ?`;
@@ -4510,10 +4513,27 @@ app.get("/api/reports/products", requireAnyPermission("view_reports"), async (re
     }));
 
     list.sort((a, b) => {
-      const av = sortField === "quantity" ? a.quantity : a.revenue;
-      const bv = sortField === "quantity" ? b.quantity : b.revenue;
-      if (av !== bv) return sortAscending ? av - bv : bv - av;
-      return a.productName.localeCompare(b.productName);
+      let av, bv;
+      if (sortByVal === "quantity") {
+        av = a.quantity;
+        bv = b.quantity;
+      } else if (sortByVal === "sku") {
+        av = a.sku || "";
+        bv = b.sku || "";
+      } else if (sortByVal === "name") {
+        av = a.productName || "";
+        bv = b.productName || "";
+      } else {
+        av = a.revenue;
+        bv = b.revenue;
+      }
+
+      if (typeof av === "string" && typeof bv === "string") {
+        return sortAscending ? av.localeCompare(bv) : bv.localeCompare(av);
+      } else {
+        if (av !== bv) return sortAscending ? av - bv : bv - av;
+        return a.productName.localeCompare(b.productName);
+      }
     });
 
     const summary = {
@@ -4525,6 +4545,61 @@ app.get("/api/reports/products", requireAnyPermission("view_reports"), async (re
   } catch (err) {
     console.error("Product report error:", err);
     res.status(500).json({ error: "Failed to load product report" });
+  }
+});
+
+// Database endpoints
+app.post("/api/database/backup", requireAnyPermission("manage_settings"), async (req, res) => {
+  try {
+    const result = await createDatabaseBackup({
+      host: DB_HOST,
+      port: DB_PORT,
+      user: DB_USER,
+      password: DB_PASSWORD,
+      database: DB_DATABASE,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("Manual backup error:", err);
+    res.status(500).json({ error: "Failed to create database backup: " + err.message });
+  }
+});
+
+app.get("/api/database/backups", requireAnyPermission("manage_settings"), async (req, res) => {
+  try {
+    const list = listBackups();
+    res.json(list);
+  } catch (err) {
+    console.error("List backups error:", err);
+    res.status(500).json({ error: "Failed to list backups" });
+  }
+});
+
+// Shortcut creation endpoint
+app.post("/api/system/create-shortcut", requireAnyPermission("manage_settings"), async (req, res) => {
+  try {
+    const projectRoot = path.resolve(path.join(__dirname, ".."));
+    const batPath = path.join(projectRoot, "start.bat");
+    
+    const psCommand = `
+      $WshShell = New-Object -ComObject WScript.Shell
+      $Shortcut = $WshShell.CreateShortcut("$HOME\\\\Desktop\\\\Rabbit Alley POS.lnk")
+      $Shortcut.TargetPath = "${batPath.replace(/\\/g, '\\\\')}"
+      $Shortcut.WorkingDirectory = "${projectRoot.replace(/\\/g, '\\\\')}"
+      $Shortcut.IconLocation = "cmd.exe"
+      $Shortcut.Save()
+    `;
+    
+    const { exec } = await import("child_process");
+    exec(`powershell -Command "${psCommand.trim().replace(/\s+/g, ' ')}"`, (err) => {
+      if (err) {
+        console.error("Shortcut creation failed:", err);
+        return res.status(500).json({ error: "Failed to create desktop shortcut: " + err.message });
+      }
+      res.json({ ok: true, message: "Desktop shortcut created successfully" });
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create desktop shortcut: " + err.message });
   }
 });
 
@@ -5825,7 +5900,8 @@ app.post("/api/tables/transfer", requireAnyPermission("transfer_table_orders"), 
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
-    const { orderId, fromTable, toTable, transferredBy, reason, transferAll } = req.body;
+    const { orderId, fromTable, toTable, reason, transferAll } = req.body;
+    const transferredBy = req.authUser.id;
     
     const [targetOrders] = await db.execute(
       `SELECT id FROM orders WHERE branch_id = ? AND table_id = ? AND status = 'pending'`,
@@ -5942,7 +6018,8 @@ app.post("/api/tables/merge", requireAnyPermission("transfer_table_orders"), asy
   const branchId = getBranchId(req);
   try {
     const db = await getPool();
-    const { sourceOrderId, targetOrderId, transferredBy, reason } = req.body;
+    const { sourceOrderId, targetOrderId, reason } = req.body;
+    const transferredBy = req.authUser.id;
     
     const [sourceOrder] = await db.execute(`SELECT branch_id, table_id FROM orders WHERE id = ?`, [sourceOrderId]);
     const [targetOrder] = await db.execute(`SELECT table_id FROM orders WHERE id = ?`, [targetOrderId]);
@@ -6003,7 +6080,7 @@ app.post("/api/tables/merge", requireAnyPermission("transfer_table_orders"), asy
     await db.execute(`
       INSERT INTO table_transfers (order_id, from_table, to_table, transfer_type, transferred_by, reason)
       VALUES (?, ?, ?, 'merge', ?, ?)
-    `, [targetOrderId, sourceTableId, targetTableId, transferredBy, reason || null]);
+    `, [targetOrderId, sourceTableId, targetTableId, transferredBy || null, reason || null]);
 
     try {
       const sessionId = await mergeSessions(db, branchId, sourceTableId, targetTableId);
@@ -6140,10 +6217,64 @@ app.put("/api/settings", requireAnyPermission("manage_settings"), async (req, re
     if (voidMig.inserted > 0) {
       console.log(`[Migration] void_log backfill: ${voidMig.inserted} legacy void(s).`);
     }
+
+    // Trigger auto-backup on startup
+    createDatabaseBackup({
+      host: DB_HOST,
+      port: DB_PORT,
+      user: DB_USER,
+      password: DB_PASSWORD,
+      database: DB_DATABASE,
+    }).then((res) => {
+      console.log(`[Backup] Startup auto-backup successful: ${res.filename} (Method: ${res.method})`);
+    }).catch((err) => {
+      console.error(`[Backup] Startup auto-backup failed:`, err.message);
+    });
   } catch (e) {
     console.warn("[Migration] Could not run auto-migration:", e.message);
   }
 })();
+
+// Periodically backup database (every 30 minutes)
+setInterval(() => {
+  console.log("[Backup] Periodic auto-backup triggered...");
+  createDatabaseBackup({
+    host: DB_HOST,
+    port: DB_PORT,
+    user: DB_USER,
+    password: DB_PASSWORD,
+    database: DB_DATABASE,
+  }).then((res) => {
+    console.log(`[Backup] Periodic auto-backup successful: ${res.filename}`);
+  }).catch((err) => {
+    console.error(`[Backup] Periodic auto-backup failed:`, err.message);
+  });
+}, 30 * 60 * 1000);
+
+// Graceful shutdown with backup
+let isShuttingDownServer = false;
+async function handleShutdown(signal) {
+  if (isShuttingDownServer) return;
+  isShuttingDownServer = true;
+  console.log(`\n[Backup] Server received ${signal}, taking exit auto-backup...`);
+  try {
+    const res = await createDatabaseBackup({
+      host: DB_HOST,
+      port: DB_PORT,
+      user: DB_USER,
+      password: DB_PASSWORD,
+      database: DB_DATABASE,
+    });
+    console.log(`[Backup] Exit auto-backup successful: ${res.filename}`);
+  } catch (err) {
+    console.error(`[Backup] Exit auto-backup failed:`, err.message);
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => handleShutdown("SIGINT"));
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+process.on("SIGBREAK", () => handleShutdown("SIGBREAK")); // Console close on Windows
 
 const server = app.listen(PORT, () => {
   console.log(`API running at http://localhost:${PORT}`);

@@ -165,4 +165,7 @@ echo   Close the two console windows to stop.
 echo  =========================================
 echo.
 pause
+echo.
+echo  [BACKUP] Creating database auto-backup before exiting...
+node server/scripts/backup-db.js
 endlocal

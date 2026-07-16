@@ -9,7 +9,7 @@
  * Powered by CoreDev Studio
  */
 
-import { spawn, exec } from 'child_process';
+import { spawn, exec, execSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -151,6 +151,19 @@ function shutdown(reason) {
 
   console.log('\n');
   log.warn(`Shutdown triggered: ${reason}`);
+
+  // Auto-backup database on exit
+  log.info('Creating auto-backup of database...');
+  try {
+    const backupScript = path.join(__dirname, 'server', 'scripts', 'backup-db.js');
+    if (fs.existsSync(backupScript)) {
+      execSync(`node "${backupScript}"`, { stdio: 'inherit' });
+      log.success('Database backup completed.');
+    }
+  } catch (err) {
+    log.error(`Database auto-backup failed: ${err.message}`);
+  }
+
   log.info('Stopping all processes...');
 
   // Kill all child processes

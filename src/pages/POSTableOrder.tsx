@@ -324,8 +324,10 @@ export default function POSTableOrder() {
 
   // Sub-categories for current category (e.g. 1pc, 2pc, Gravy under Chickenjoy)
   const subCategoriesForCurrent = useMemo(() => {
-    if (selectedCategory === "Ladies Drink" || !selectedCategory) return [];
-    const inCategory = products.filter((p) => p.category === selectedCategory && p.department !== "LD");
+    if (!selectedCategory) return [];
+    const inCategory = selectedCategory === "Ladies Drink"
+      ? products.filter((p) => p.department === "LD")
+      : products.filter((p) => p.category === selectedCategory && p.department !== "LD");
     const subs = [...new Set(inCategory.map((p) => (p as Product & { sub_category?: string }).sub_category).filter((s): s is string => Boolean(s?.trim())))].sort();
     return subs;
   }, [products, selectedCategory]);
@@ -333,7 +335,13 @@ export default function POSTableOrder() {
   // Memoize filtered products for better performance (must be before early returns!)
   const filteredProducts = useMemo(
     () => {
-      if (selectedCategory === "Ladies Drink") return products.filter((p) => p.department === "LD");
+      if (selectedCategory === "Ladies Drink") {
+        const ldProducts = products.filter((p) => p.department === "LD");
+        if (selectedSubCategory && subCategoriesForCurrent.length > 0) {
+          return ldProducts.filter((p) => (p as Product & { sub_category?: string }).sub_category === selectedSubCategory);
+        }
+        return ldProducts;
+      }
       const byCategory = products.filter((p) => p.category === selectedCategory && p.department !== "LD");
       if (selectedSubCategory && subCategoriesForCurrent.length > 0) {
         return byCategory.filter((p) => (p as Product & { sub_category?: string }).sub_category === selectedSubCategory);
@@ -1787,7 +1795,7 @@ export default function POSTableOrder() {
           </div>
 
           {/* Sub-categories (e.g. 1pc, 2pc, Gravy) when category has options */}
-          {selectedCategory && selectedCategory !== "Ladies Drink" && subCategoriesForCurrent.length > 0 && (
+          {selectedCategory && subCategoriesForCurrent.length > 0 && (
             <div className="flex gap-2 flex-wrap items-center">
               <span className="text-xs text-muted-foreground mr-1">Options:</span>
               <Button

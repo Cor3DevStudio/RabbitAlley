@@ -84,6 +84,61 @@ export default function Settings() {
   const { hasPermission, user } = useAuth();
   const canManage = hasPermission("manage_settings");
 
+  const [backups, setBackups] = useState<Array<{ filename: string; size: number; createdAt: string; path: string }>>([]);
+  const [loadingBackups, setLoadingBackups] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
+  const [creatingShortcut, setCreatingShortcut] = useState(false);
+
+  const loadBackupsList = useCallback(async () => {
+    if (!canManage) return;
+    setLoadingBackups(true);
+    try {
+      const list = await api.database.listBackups();
+      setBackups(list);
+    } catch {
+      // Ignore
+    } finally {
+      setLoadingBackups(false);
+    }
+  }, [canManage]);
+
+  useEffect(() => {
+    loadBackupsList();
+  }, [loadBackupsList]);
+
+  const handleCreateBackup = async () => {
+    setBackingUp(true);
+    try {
+      const res = await api.database.backup();
+      if (res.ok) {
+        toast.success(`Backup created: ${res.filename}`);
+        loadBackupsList();
+      } else {
+        toast.error("Failed to create backup");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to create backup");
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const handleCreateShortcut = async () => {
+    setCreatingShortcut(true);
+    try {
+      const res = await api.system.createShortcut();
+      if (res.ok) {
+        toast.success("Desktop shortcut created successfully!");
+      } else {
+        toast.error("Failed to create shortcut");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to create shortcut");
+    } finally {
+      setCreatingShortcut(false);
+    }
+  };
+
   const local = getPosSettings();
   const [businessName, setBusinessName] = useState(local.businessName);
   const [address, setAddress] = useState(local.address);
@@ -642,6 +697,79 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+
+          {canManage && (
+            <Card className="mt-3">
+              <CardHeader className="py-3 px-4">
+                <CardTitle className="text-base font-semibold">Database &amp; System Launcher</CardTitle>
+                <CardDescription className="text-xs">
+                  Configure automatic backup data and desktop shortcut.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 px-4 pb-4 pt-0">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">One-Click Desktop Shortcut</p>
+                      <p className="text-xs text-muted-foreground">
+                        Create a desktop shortcut to quickly start the POS.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleCreateShortcut}
+                      disabled={creatingShortcut}
+                    >
+                      {creatingShortcut ? "Creating..." : "Create Shortcut"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="border-t pt-3 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">Manual Backup</p>
+                      <p className="text-xs text-muted-foreground">
+                        Create a backup of your MySQL database instantly.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCreateBackup}
+                      disabled={backingUp}
+                    >
+                      {backingUp ? "Backing up..." : "Backup Now"}
+                    </Button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Recent Backups (Saved in /backups/)
+                    </p>
+                    {loadingBackups ? (
+                      <p className="text-xs text-muted-foreground">Loading backup history...</p>
+                    ) : backups.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No backup files found. Run a backup or start the server to trigger auto-backup.</p>
+                    ) : (
+                      <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1 border rounded p-2 bg-muted/10">
+                        {backups.map((b) => (
+                          <div key={b.filename} className="flex justify-between items-center gap-2 text-xs p-1.5 bg-background border rounded font-mono">
+                            <span className="truncate text-muted-foreground" title={b.filename}>{b.filename}</span>
+                            <span className="shrink-0 text-muted-foreground">
+                              {(b.size / 1024).toFixed(1)} KB · {new Date(b.createdAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </AppLayout>

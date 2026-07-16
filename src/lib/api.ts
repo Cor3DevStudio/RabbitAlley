@@ -605,7 +605,7 @@ export const api = {
         category?: string;
         tableId?: string;
         sessionId?: string | number;
-        sortBy?: "quantity" | "revenue";
+        sortBy?: "quantity" | "revenue" | "sku" | "name";
         sortDir?: "asc" | "desc";
       }
     ) => {
@@ -1046,6 +1046,16 @@ export const api = {
     /** Upsert one or more settings rows. */
     save: (data: Record<string, string>) =>
       fetchApi<{ ok: boolean }>("/api/settings", { method: "PUT", body: JSON.stringify(data) }),
+  },
+  database: {
+    backup: () =>
+      fetchApi<{ ok: boolean; filename: string; path: string }>("/api/database/backup", { method: "POST" }),
+    listBackups: () =>
+      fetchApi<Array<{ filename: string; size: number; createdAt: string; path: string }>>("/api/database/backups"),
+  },
+  system: {
+    createShortcut: () =>
+      fetchApi<{ ok: boolean; message: string }>("/api/system/create-shortcut", { method: "POST" }),
   },
 };
 

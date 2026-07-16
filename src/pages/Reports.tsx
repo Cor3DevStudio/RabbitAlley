@@ -540,7 +540,7 @@ export default function Reports() {
   const [filterProductCategory, setFilterProductCategory] = useState("All");
   const [filterProductTableId, setFilterProductTableId] = useState("");
   const [filterProductSessionId, setFilterProductSessionId] = useState("");
-  const [productSortBy, setProductSortBy] = useState<"quantity" | "revenue">("revenue");
+  const [productSortBy, setProductSortBy] = useState<"quantity" | "revenue" | "sku" | "name">("revenue");
   const [productSortDir, setProductSortDir] = useState<"asc" | "desc">("desc");
   const [productCategories, setProductCategories] = useState<string[]>([]);
   const [expandedProductSkus, setExpandedProductSkus] = useState<Record<string, boolean>>({});
@@ -1736,10 +1736,10 @@ export default function Reports() {
         {activeTab === "products" && (
           <>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">SKU:</span>
+              <span className="text-sm text-muted-foreground">Search Product:</span>
               <Input
-                placeholder="e.g. SMB-001"
-                className="w-36"
+                placeholder="Name or SKU"
+                className="w-44"
                 value={filterProductSku}
                 onChange={(e) => setFilterProductSku(e.target.value)}
               />
@@ -1782,7 +1782,7 @@ export default function Reports() {
               <Select
                 value={`${productSortBy}-${productSortDir}`}
                 onValueChange={(v) => {
-                  const [by, dir] = v.split("-") as ["quantity" | "revenue", "asc" | "desc"];
+                  const [by, dir] = v.split("-") as ["quantity" | "revenue" | "sku" | "name", "asc" | "desc"];
                   setProductSortBy(by);
                   setProductSortDir(dir);
                 }}
@@ -1795,6 +1795,10 @@ export default function Reports() {
                   <SelectItem value="revenue-asc">Revenue (low → high)</SelectItem>
                   <SelectItem value="quantity-desc">Quantity (high → low)</SelectItem>
                   <SelectItem value="quantity-asc">Quantity (low → high)</SelectItem>
+                  <SelectItem value="sku-asc">SKU (A → Z)</SelectItem>
+                  <SelectItem value="sku-desc">SKU (Z → A)</SelectItem>
+                  <SelectItem value="name-asc">Product Name (A → Z)</SelectItem>
+                  <SelectItem value="name-desc">Product Name (Z → A)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
