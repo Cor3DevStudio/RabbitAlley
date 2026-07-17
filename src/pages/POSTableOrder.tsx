@@ -1549,8 +1549,8 @@ export default function POSTableOrder() {
             ? "Payment complete. Receipt could not be sent to printer."
             : `Payment complete. ${PRINT_JOB_LABELS.payment_receipt} printing is disabled.`
       );
-    } catch {
-      toast.error("Failed to process payment");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to process payment");
       setPaymentModalOpen(false);
     } finally {
       setProcessingPayment(false);

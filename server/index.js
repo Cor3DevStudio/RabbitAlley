@@ -2637,45 +2637,116 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
       await conn.rollback();
       return res.status(400).json({ error: "Split payment total must be greater than zero" });
     }
-    const cardSplitSum = isSplitPayment
-      ? (splits || []).reduce((s, sp) => {
-          const m = normalizePaymentMethod(sp.paymentMethod || "");
-          return isCardPaymentMethod(m) ? s + (Number(sp.amount) || 0) : s;
-        }, 0)
-      : 0;
-    const cardSplitRatio = paidSum > 0 ? Math.min(1, Math.max(0, cardSplitSum / paidSum)) : 0;
+
+    // First, calculate the base total (total before card surcharge) for each order
+    // and sum them up to get totalBaseTotal.
+    const orderBases = [];
+    let totalBaseTotal = 0;
+    let tempDiscountRemaining = round2(requestedDiscount);
+
     for (let i = 0; i < pending.length; i++) {
       const o = pending[i];
       const chargeable = chargeableByOrder[i].chargeable;
       const proportionalDiscount = requestedDiscount > 0 && totalChargeable > 0
         ? round2((chargeable / totalChargeable) * requestedDiscount)
         : 0;
-      const orderDiscount = i === pending.length - 1 ? Math.min(discountRemaining, chargeable) : Math.min(proportionalDiscount, chargeable);
-      discountRemaining = round2(discountRemaining - orderDiscount);
+      const orderDiscount = i === pending.length - 1 ? Math.min(tempDiscountRemaining, chargeable) : Math.min(proportionalDiscount, chargeable);
+      tempDiscountRemaining = round2(tempDiscountRemaining - orderDiscount);
       const taxableBase = Math.max(0, chargeable - orderDiscount);
       const orderService = serviceChargeMode === "fixed"
         ? (discountedChargeableTotal > 0 ? round2(serviceChargeValue * (taxableBase / discountedChargeableTotal)) : 0)
         : computePercentServiceCharge(taxableBase);
       const orderTax = round2(taxableBase * taxRate);
       const baseTotal = round2(taxableBase + orderService + orderTax);
-      let orderCardSurcharge = 0;
-      if (!isSplitPayment && isCardPaymentMethod(paymentMethodVal)) {
-        orderCardSurcharge = round2(baseTotal * cardSurchargeRate);
-      } else if (isSplitPayment && cardSplitRatio > 0) {
-        orderCardSurcharge = round2(baseTotal * cardSurchargeRate * cardSplitRatio);
+
+      orderBases.push({
+        id: o.id,
+        discount: orderDiscount,
+        tax: orderTax,
+        serviceCharge: orderService,
+        baseTotal: baseTotal
+      });
+      totalBaseTotal = round2(totalBaseTotal + baseTotal);
+    }
+
+    // Now, calculate the card surcharge for split payment
+    let totalCardSurcharge = 0;
+    let useAdjustedSplitMath = false;
+
+    if (isSplitPayment) {
+      const splitBaseTotalRaw = paidSum;
+      const splitBaseTotalAdjusted = (splits || []).reduce((sum, sp) => {
+        const amt = Number(sp.amount) || 0;
+        const m = normalizePaymentMethod(sp.paymentMethod || "");
+        if (isCardPaymentMethod(m)) {
+          return sum + (amt / (1 + cardSurchargeRate));
+        }
+        return sum + amt;
+      }, 0);
+
+      useAdjustedSplitMath = Math.abs(totalBaseTotal - splitBaseTotalAdjusted) < Math.abs(totalBaseTotal - splitBaseTotalRaw);
+
+      if (useAdjustedSplitMath) {
+        totalCardSurcharge = (splits || []).reduce((sum, sp) => {
+          const amt = Number(sp.amount) || 0;
+          const m = normalizePaymentMethod(sp.paymentMethod || "");
+          if (isCardPaymentMethod(m)) {
+            return sum + (amt - amt / (1 + cardSurchargeRate));
+          }
+          return sum;
+        }, 0);
+      } else {
+        totalCardSurcharge = (splits || []).reduce((sum, sp) => {
+          const amt = Number(sp.amount) || 0;
+          const m = normalizePaymentMethod(sp.paymentMethod || "");
+          if (isCardPaymentMethod(m)) {
+            return sum + amt * cardSurchargeRate;
+          }
+          return sum;
+        }, 0);
       }
+    } else {
+      // Non-split card surcharge logic
+      if (isCardPaymentMethod(paymentMethodVal)) {
+        totalCardSurcharge = totalBaseTotal * cardSurchargeRate;
+      }
+    }
+
+    totalCardSurcharge = round2(totalCardSurcharge);
+
+    // Distribute totalCardSurcharge proportionally among the orders
+    let cardSurchargeRemaining = round2(totalCardSurcharge);
+
+    for (let i = 0; i < orderBases.length; i++) {
+      const ob = orderBases[i];
+      let orderCardSurcharge = 0;
+      if (cardSurchargeRemaining > 0) {
+        if (i === orderBases.length - 1) {
+          orderCardSurcharge = cardSurchargeRemaining;
+        } else {
+          const proportional = totalBaseTotal > 0 ? round2((ob.baseTotal / totalBaseTotal) * totalCardSurcharge) : 0;
+          orderCardSurcharge = Math.min(cardSurchargeRemaining, proportional);
+        }
+        cardSurchargeRemaining = round2(cardSurchargeRemaining - orderCardSurcharge);
+      }
+      ob.cardSurcharge = orderCardSurcharge;
       computedCardSurcharge += orderCardSurcharge;
-      const orderTotal = round2(baseTotal + orderCardSurcharge);
-      orderComputedById[String(o.id)] = {
-        discount: round2(orderDiscount),
-        tax: round2(orderTax),
-        serviceCharge: round2(orderService),
-        cardSurcharge: round2(orderCardSurcharge),
-        total: round2(orderTotal),
+      ob.total = round2(ob.baseTotal + orderCardSurcharge);
+    }
+
+    // Perform database updates
+    for (let i = 0; i < orderBases.length; i++) {
+      const ob = orderBases[i];
+      orderComputedById[String(ob.id)] = {
+        discount: ob.discount,
+        tax: ob.tax,
+        serviceCharge: ob.serviceCharge,
+        cardSurcharge: ob.cardSurcharge,
+        total: ob.total,
       };
       await conn.execute(
         "UPDATE orders SET status = 'paid', payment_method = ?, discount = ?, tax = ?, total = ? WHERE id = ?",
-        [paymentMethodVal, orderDiscount, orderTax, orderTotal, o.id]
+        [paymentMethodVal, ob.discount, ob.tax, ob.total, ob.id]
       );
     }
     try {
@@ -2703,7 +2774,8 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
     const combinedDiscount = (paidRows || []).reduce((s, o) => s + Number(o.discount), 0);
     const combinedTax = (paidRows || []).reduce((s, o) => s + Number(o.tax), 0);
     const combinedTotal = (paidRows || []).reduce((s, o) => s + Number(o.total), 0);
-    if (isSplitPayment && Math.abs(round2(paidSum) - round2(combinedTotal)) >= 0.01) {
+    const validationExpected = useAdjustedSplitMath ? combinedTotal : totalBaseTotal;
+    if (isSplitPayment && Math.abs(round2(paidSum) - round2(validationExpected)) >= 0.01) {
       await conn.rollback();
       return res.status(400).json({ error: "Split payment amounts must exactly match computed total" });
     }
