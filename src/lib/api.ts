@@ -998,6 +998,28 @@ export const api = {
           }),
         }
       ),
+    /** Server-authoritative bill total (mirrors pay-all math) to prevent cashier-vs-server drift. */
+    billPreview: (
+      tableId: string,
+      body: {
+        paymentMethod?: string;
+        discountAmount?: number;
+        splits?: Array<{ amount: number; paymentMethod: string }>;
+      }
+    ) =>
+      fetchApi<{
+        subtotal: number;
+        complimentary: number;
+        discount: number;
+        tax: number;
+        serviceCharge: number;
+        cardSurcharge: number;
+        baseTotal: number;
+        total: number;
+      }>(`/api/tables/${tableId}/bill-preview`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
     runningBillSnapshot: (tableId: string) =>
       fetchApi<{
         id: string;

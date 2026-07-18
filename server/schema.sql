@@ -434,7 +434,7 @@ CREATE TABLE IF NOT EXISTS payment_conversions (
 CREATE TABLE IF NOT EXISTS charge_transactions (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   branch_id INT UNSIGNED NOT NULL DEFAULT 1,
-  order_ids VARCHAR(255) DEFAULT NULL,
+  order_ids TEXT DEFAULT NULL,
   customer_name VARCHAR(128) NOT NULL,
   amount DECIMAL(12,2) NOT NULL,
   status ENUM('pending','paid') NOT NULL DEFAULT 'pending',

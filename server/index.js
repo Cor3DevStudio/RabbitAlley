@@ -2507,6 +2507,244 @@ app.patch("/api/orders/:id/pay", requireAnyPermission("accept_payments", "manage
   }
 });
 
+/**
+ * Single source of truth for table bill math. Used by BOTH pay-all and bill-preview
+ * so the amount the cashier sees, the amount collected, and the receipt always agree
+ * to the centavo. Rounds tax/service per order exactly once (no cross-calculator drift).
+ */
+function computeTableBillTotals({
+  pending,
+  complimentaryByOrder = {},
+  taxRate = 0,
+  serviceChargeMode = "percent",
+  serviceChargeValue = 0,
+  cardSurchargeRate = 0,
+  discountAmount = 0,
+  isSplitPayment = false,
+  paymentMethodVal = "cash",
+  splits = [],
+}) {
+  const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+  const computePercentServiceCharge = (baseAmount) => round2(baseAmount * (serviceChargeValue / 100));
+
+  const chargeableByOrder = pending.map((o) => {
+    const chargeable = Math.max(0, Number(o.subtotal) - Number(complimentaryByOrder[String(o.id)] || 0));
+    return { id: o.id, chargeable };
+  });
+  const totalChargeable = chargeableByOrder.reduce((s, o) => s + o.chargeable, 0);
+  const requestedDiscount = Math.min(Math.max(0, Number(discountAmount) || 0), totalChargeable);
+  const discountedChargeableTotal = Math.max(0, totalChargeable - requestedDiscount);
+  const paidSum = isSplitPayment ? (splits || []).reduce((s, sp) => s + (Number(sp.amount) || 0), 0) : 0;
+
+  const orderBases = [];
+  let totalBaseTotal = 0;
+  let tempDiscountRemaining = round2(requestedDiscount);
+
+  for (let i = 0; i < pending.length; i++) {
+    const o = pending[i];
+    const chargeable = chargeableByOrder[i].chargeable;
+    const proportionalDiscount = requestedDiscount > 0 && totalChargeable > 0
+      ? round2((chargeable / totalChargeable) * requestedDiscount)
+      : 0;
+    const orderDiscount = i === pending.length - 1 ? Math.min(tempDiscountRemaining, chargeable) : Math.min(proportionalDiscount, chargeable);
+    tempDiscountRemaining = round2(tempDiscountRemaining - orderDiscount);
+    const taxableBase = Math.max(0, chargeable - orderDiscount);
+    const orderService = serviceChargeMode === "fixed"
+      ? (discountedChargeableTotal > 0 ? round2(serviceChargeValue * (taxableBase / discountedChargeableTotal)) : 0)
+      : computePercentServiceCharge(taxableBase);
+    const orderTax = round2(taxableBase * taxRate);
+    const baseTotal = round2(taxableBase + orderService + orderTax);
+    orderBases.push({ id: o.id, discount: orderDiscount, tax: orderTax, serviceCharge: orderService, baseTotal });
+    totalBaseTotal = round2(totalBaseTotal + baseTotal);
+  }
+
+  let totalCardSurcharge = 0;
+  let useAdjustedSplitMath = false;
+  if (isSplitPayment) {
+    const splitBaseTotalRaw = paidSum;
+    const splitBaseTotalAdjusted = (splits || []).reduce((sum, sp) => {
+      const amt = Number(sp.amount) || 0;
+      const m = normalizePaymentMethod(sp.paymentMethod || "");
+      if (isCardPaymentMethod(m)) return sum + (amt / (1 + cardSurchargeRate));
+      return sum + amt;
+    }, 0);
+    useAdjustedSplitMath = Math.abs(totalBaseTotal - splitBaseTotalAdjusted) < Math.abs(totalBaseTotal - splitBaseTotalRaw);
+    if (useAdjustedSplitMath) {
+      totalCardSurcharge = (splits || []).reduce((sum, sp) => {
+        const amt = Number(sp.amount) || 0;
+        const m = normalizePaymentMethod(sp.paymentMethod || "");
+        if (isCardPaymentMethod(m)) return sum + (amt - amt / (1 + cardSurchargeRate));
+        return sum;
+      }, 0);
+    } else {
+      totalCardSurcharge = (splits || []).reduce((sum, sp) => {
+        const amt = Number(sp.amount) || 0;
+        const m = normalizePaymentMethod(sp.paymentMethod || "");
+        if (isCardPaymentMethod(m)) return sum + amt * cardSurchargeRate;
+        return sum;
+      }, 0);
+    }
+  } else if (isCardPaymentMethod(paymentMethodVal)) {
+    totalCardSurcharge = totalBaseTotal * cardSurchargeRate;
+  }
+  totalCardSurcharge = round2(totalCardSurcharge);
+
+  let cardSurchargeRemaining = round2(totalCardSurcharge);
+  let computedCardSurcharge = 0;
+  for (let i = 0; i < orderBases.length; i++) {
+    const ob = orderBases[i];
+    let orderCardSurcharge = 0;
+    if (cardSurchargeRemaining > 0) {
+      if (i === orderBases.length - 1) {
+        orderCardSurcharge = cardSurchargeRemaining;
+      } else {
+        const proportional = totalBaseTotal > 0 ? round2((ob.baseTotal / totalBaseTotal) * totalCardSurcharge) : 0;
+        orderCardSurcharge = Math.min(cardSurchargeRemaining, proportional);
+      }
+      cardSurchargeRemaining = round2(cardSurchargeRemaining - orderCardSurcharge);
+    }
+    ob.cardSurcharge = orderCardSurcharge;
+    computedCardSurcharge += orderCardSurcharge;
+    ob.total = round2(ob.baseTotal + orderCardSurcharge);
+  }
+
+  const orderComputedById = {};
+  for (const ob of orderBases) {
+    orderComputedById[String(ob.id)] = {
+      discount: ob.discount,
+      tax: ob.tax,
+      serviceCharge: ob.serviceCharge,
+      cardSurcharge: ob.cardSurcharge,
+      total: ob.total,
+    };
+  }
+
+  const combinedSubtotal = round2(pending.reduce((s, o) => s + Number(o.subtotal || 0), 0));
+  const combinedComplimentary = round2(pending.reduce((s, o) => s + Number(complimentaryByOrder[String(o.id)] || 0), 0));
+  const combinedDiscount = round2(orderBases.reduce((s, o) => s + Number(o.discount || 0), 0));
+  const combinedTax = round2(orderBases.reduce((s, o) => s + Number(o.tax || 0), 0));
+  const combinedServiceCharge = round2(orderBases.reduce((s, o) => s + Number(o.serviceCharge || 0), 0));
+  const combinedCardSurcharge = round2(computedCardSurcharge);
+  const combinedTotal = round2(orderBases.reduce((s, o) => s + Number(o.total || 0), 0));
+
+  return {
+    orderBases,
+    orderComputedById,
+    totalBaseTotal,
+    totalCardSurcharge,
+    useAdjustedSplitMath,
+    paidSum,
+    requestedDiscount,
+    combinedSubtotal,
+    combinedComplimentary,
+    combinedDiscount,
+    combinedTax,
+    combinedServiceCharge,
+    combinedCardSurcharge,
+    combinedTotal,
+  };
+}
+
+/** Load complimentary total per order (for bill math). */
+async function loadComplimentaryByOrder(conn, pendingIds) {
+  if (!pendingIds.length) return {};
+  const placeholders = pendingIds.map(() => "?").join(",");
+  const compRows = await queryWithVoidFallback(
+    conn,
+    `SELECT oi.order_id AS orderId,
+            COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
+     FROM order_items oi
+     WHERE oi.order_id IN (${placeholders}) AND COALESCE(oi.is_voided,0) = 0
+     GROUP BY oi.order_id`,
+    `SELECT oi.order_id AS orderId,
+            COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
+     FROM order_items oi
+     WHERE oi.order_id IN (${placeholders})
+     GROUP BY oi.order_id`,
+    pendingIds
+  );
+  return (compRows || []).reduce((acc, r) => {
+    acc[String(r.orderId)] = Number(r.complimentary || 0);
+    return acc;
+  }, {});
+}
+
+/** Read financial settings used by bill math. */
+async function loadBillSettings(conn) {
+  const [settingsRows] = await conn.execute(
+    "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('tax_rate','service_charge_mode','service_charge_value','card_surcharge')"
+  );
+  const settingsMap = {};
+  for (const row of settingsRows || []) settingsMap[row.setting_key] = row.setting_value;
+  return {
+    taxRate: Math.max(0, Number(settingsMap.tax_rate ?? 0) || 0) / 100,
+    serviceChargeMode: String(settingsMap.service_charge_mode || "percent") === "fixed" ? "fixed" : "percent",
+    serviceChargeValue: Math.max(0, Number(settingsMap.service_charge_value ?? 0) || 0),
+    cardSurchargeRate: Math.max(0, Number(settingsMap.card_surcharge ?? 0) || 0) / 100,
+  };
+}
+
+/**
+ * Read-only preview of the exact amount pay-all would charge. Lets the POS display and
+ * "Exact Amount" button use the server total, eliminating "amount less than due" drift.
+ */
+app.post("/api/tables/:tableId/bill-preview", requireAnyPermission("accept_payments", "manage_pos", "view_orders"), async (req, res) => {
+  const { tableId } = req.params;
+  const branchId = getBranchId(req);
+  const { paymentMethod, discountAmount, splits } = req.body || {};
+  try {
+    const db = await getPool();
+    const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+    let pending;
+    try {
+      [pending] = await db.execute(
+        "SELECT id, subtotal FROM orders WHERE table_id = ? AND status = 'pending' AND branch_id = ? AND voided_at IS NULL ORDER BY id",
+        [tableId, branchId]
+      );
+    } catch (e) {
+      if (e.code !== "ER_BAD_FIELD_ERROR") throw e;
+      [pending] = await db.execute(
+        "SELECT id, subtotal FROM orders WHERE table_id = ? AND status = 'pending' AND branch_id = ? ORDER BY id",
+        [tableId, branchId]
+      );
+    }
+    if (!pending.length) {
+      // Read-only preview: an empty/settled table is not an error, just a zero bill.
+      return res.json({
+        subtotal: 0, complimentary: 0, discount: 0, tax: 0,
+        serviceCharge: 0, cardSurcharge: 0, baseTotal: 0, total: 0,
+      });
+    }
+
+    const isSplitPayment = Array.isArray(splits) && splits.length >= 2;
+    const paymentMethodVal = isSplitPayment ? "split_payment" : normalizePaymentMethod(paymentMethod || "cash");
+    const complimentaryByOrder = await loadComplimentaryByOrder(db, pending.map((o) => o.id));
+    const settings = await loadBillSettings(db);
+    const bill = computeTableBillTotals({
+      pending,
+      complimentaryByOrder,
+      ...settings,
+      discountAmount,
+      isSplitPayment,
+      paymentMethodVal,
+      splits,
+    });
+    res.json({
+      subtotal: bill.combinedSubtotal,
+      complimentary: bill.combinedComplimentary,
+      discount: bill.combinedDiscount,
+      tax: bill.combinedTax,
+      serviceCharge: bill.combinedServiceCharge,
+      cardSurcharge: bill.combinedCardSurcharge,
+      baseTotal: round2(bill.totalBaseTotal),
+      total: bill.combinedTotal,
+    });
+  } catch (err) {
+    console.error("Bill preview error:", err);
+    res.status(500).json({ error: "Failed to compute bill preview" });
+  }
+});
+
 // Pay ALL pending orders for a table (multi-tab: one bill for entire table)
 app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments", "manage_pos"), async (req, res) => {
   const { tableId } = req.params;
@@ -2561,7 +2799,6 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
     const serviceChargeMode = String(settingsMap.service_charge_mode || "percent") === "fixed" ? "fixed" : "percent";
     const serviceChargeValue = Math.max(0, Number(settingsMap.service_charge_value ?? 0) || 0);
     const cardSurchargeRate = Math.max(0, Number(settingsMap.card_surcharge ?? 0) || 0) / 100;
-    const computePercentServiceCharge = (baseAmount) => round2(baseAmount * (serviceChargeValue / 100));
     const pendingIds = pending.map((o) => o.id);
     // Pin this billing batch to the open table session (or create one if missing).
     let payAllSessionId = null;
@@ -2600,187 +2837,51 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
         if (e2.code !== "ER_BAD_FIELD_ERROR") throw e2;
       }
     }
-    let complimentaryByOrder = {};
-    if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => "?").join(",");
-      const compRows = await queryWithVoidFallback(
-        conn,
-        `SELECT oi.order_id AS orderId,
-                COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
-         FROM order_items oi
-         WHERE oi.order_id IN (${placeholders}) AND COALESCE(oi.is_voided,0) = 0
-         GROUP BY oi.order_id`,
-        `SELECT oi.order_id AS orderId,
-                COALESCE(SUM(CASE WHEN oi.is_complimentary = 1 THEN oi.subtotal ELSE 0 END), 0) AS complimentary
-         FROM order_items oi
-         WHERE oi.order_id IN (${placeholders})
-         GROUP BY oi.order_id`,
-        pendingIds
-      );
-      complimentaryByOrder = (compRows || []).reduce((acc, r) => {
-        acc[String(r.orderId)] = Number(r.complimentary || 0);
-        return acc;
-      }, {});
-    }
-    const chargeableByOrder = pending.map((o) => {
-      const chargeable = Math.max(0, Number(o.subtotal) - Number(complimentaryByOrder[String(o.id)] || 0));
-      return { id: o.id, chargeable };
+    const complimentaryByOrder = await loadComplimentaryByOrder(conn, pendingIds);
+
+    // Single source of truth: identical math to /bill-preview (no cashier-vs-server drift).
+    const bill = computeTableBillTotals({
+      pending,
+      complimentaryByOrder,
+      taxRate,
+      serviceChargeMode,
+      serviceChargeValue,
+      cardSurchargeRate,
+      discountAmount,
+      isSplitPayment,
+      paymentMethodVal,
+      splits,
     });
-    const totalChargeable = chargeableByOrder.reduce((s, o) => s + o.chargeable, 0);
-    const requestedDiscount = Math.min(Math.max(0, Number(discountAmount) || 0), totalChargeable);
-    const discountedChargeableTotal = Math.max(0, totalChargeable - requestedDiscount);
-    let discountRemaining = round2(requestedDiscount);
-    let computedCardSurcharge = 0;
-    const orderComputedById = {};
-    const paidSum = isSplitPayment ? (splits || []).reduce((s, sp) => s + (Number(sp.amount) || 0), 0) : 0;
+    const {
+      orderBases,
+      orderComputedById,
+      totalBaseTotal,
+      useAdjustedSplitMath,
+      paidSum,
+      combinedSubtotal,
+      combinedDiscount,
+      combinedTax,
+      combinedTotal,
+      combinedCardSurcharge,
+    } = bill;
+    const computedCardSurcharge = combinedCardSurcharge;
+
     if (isSplitPayment && paidSum <= 0) {
       await conn.rollback();
       return res.status(400).json({ error: "Split payment total must be greater than zero" });
     }
 
-    // First, calculate the base total (total before card surcharge) for each order
-    // and sum them up to get totalBaseTotal.
-    const orderBases = [];
-    let totalBaseTotal = 0;
-    let tempDiscountRemaining = round2(requestedDiscount);
-
-    for (let i = 0; i < pending.length; i++) {
-      const o = pending[i];
-      const chargeable = chargeableByOrder[i].chargeable;
-      const proportionalDiscount = requestedDiscount > 0 && totalChargeable > 0
-        ? round2((chargeable / totalChargeable) * requestedDiscount)
-        : 0;
-      const orderDiscount = i === pending.length - 1 ? Math.min(tempDiscountRemaining, chargeable) : Math.min(proportionalDiscount, chargeable);
-      tempDiscountRemaining = round2(tempDiscountRemaining - orderDiscount);
-      const taxableBase = Math.max(0, chargeable - orderDiscount);
-      const orderService = serviceChargeMode === "fixed"
-        ? (discountedChargeableTotal > 0 ? round2(serviceChargeValue * (taxableBase / discountedChargeableTotal)) : 0)
-        : computePercentServiceCharge(taxableBase);
-      const orderTax = round2(taxableBase * taxRate);
-      const baseTotal = round2(taxableBase + orderService + orderTax);
-
-      orderBases.push({
-        id: o.id,
-        discount: orderDiscount,
-        tax: orderTax,
-        serviceCharge: orderService,
-        baseTotal: baseTotal
-      });
-      totalBaseTotal = round2(totalBaseTotal + baseTotal);
-    }
-
-    // Now, calculate the card surcharge for split payment
-    let totalCardSurcharge = 0;
-    let useAdjustedSplitMath = false;
-
-    if (isSplitPayment) {
-      const splitBaseTotalRaw = paidSum;
-      const splitBaseTotalAdjusted = (splits || []).reduce((sum, sp) => {
-        const amt = Number(sp.amount) || 0;
-        const m = normalizePaymentMethod(sp.paymentMethod || "");
-        if (isCardPaymentMethod(m)) {
-          return sum + (amt / (1 + cardSurchargeRate));
-        }
-        return sum + amt;
-      }, 0);
-
-      useAdjustedSplitMath = Math.abs(totalBaseTotal - splitBaseTotalAdjusted) < Math.abs(totalBaseTotal - splitBaseTotalRaw);
-
-      if (useAdjustedSplitMath) {
-        totalCardSurcharge = (splits || []).reduce((sum, sp) => {
-          const amt = Number(sp.amount) || 0;
-          const m = normalizePaymentMethod(sp.paymentMethod || "");
-          if (isCardPaymentMethod(m)) {
-            return sum + (amt - amt / (1 + cardSurchargeRate));
-          }
-          return sum;
-        }, 0);
-      } else {
-        totalCardSurcharge = (splits || []).reduce((sum, sp) => {
-          const amt = Number(sp.amount) || 0;
-          const m = normalizePaymentMethod(sp.paymentMethod || "");
-          if (isCardPaymentMethod(m)) {
-            return sum + amt * cardSurchargeRate;
-          }
-          return sum;
-        }, 0);
-      }
-    } else {
-      // Non-split card surcharge logic
-      if (isCardPaymentMethod(paymentMethodVal)) {
-        totalCardSurcharge = totalBaseTotal * cardSurchargeRate;
-      }
-    }
-
-    totalCardSurcharge = round2(totalCardSurcharge);
-
-    // Distribute totalCardSurcharge proportionally among the orders
-    let cardSurchargeRemaining = round2(totalCardSurcharge);
-
-    for (let i = 0; i < orderBases.length; i++) {
-      const ob = orderBases[i];
-      let orderCardSurcharge = 0;
-      if (cardSurchargeRemaining > 0) {
-        if (i === orderBases.length - 1) {
-          orderCardSurcharge = cardSurchargeRemaining;
-        } else {
-          const proportional = totalBaseTotal > 0 ? round2((ob.baseTotal / totalBaseTotal) * totalCardSurcharge) : 0;
-          orderCardSurcharge = Math.min(cardSurchargeRemaining, proportional);
-        }
-        cardSurchargeRemaining = round2(cardSurchargeRemaining - orderCardSurcharge);
-      }
-      ob.cardSurcharge = orderCardSurcharge;
-      computedCardSurcharge += orderCardSurcharge;
-      ob.total = round2(ob.baseTotal + orderCardSurcharge);
-    }
-
-    // Perform database updates
-    for (let i = 0; i < orderBases.length; i++) {
-      const ob = orderBases[i];
-      orderComputedById[String(ob.id)] = {
-        discount: ob.discount,
-        tax: ob.tax,
-        serviceCharge: ob.serviceCharge,
-        cardSurcharge: ob.cardSurcharge,
-        total: ob.total,
-      };
-      await conn.execute(
-        "UPDATE orders SET status = 'paid', payment_method = ?, discount = ?, tax = ?, total = ? WHERE id = ?",
-        [paymentMethodVal, ob.discount, ob.tax, ob.total, ob.id]
-      );
-    }
-    try {
-      await consumeStockForPaidOrderIds(conn, pendingIds);
-    } catch (stockErr) {
-      if (stockErr.code !== "ER_NO_SUCH_TABLE") throw stockErr;
-    }
-    const { userId, employeeId, userName } = getActingUser(req);
-    try {
-      await vacateTableIfIdle(conn, branchId, tableId, {
-        closedBy: userName || employeeId || "pay-all",
-      });
-    } catch (sessErr) {
-      if (sessErr.code !== "ER_NO_SUCH_TABLE") throw sessErr;
-      await conn.execute(
-        "UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?",
-        [branchId, tableId]
-      );
-    }
-    const [paidRows] = await conn.execute(
-      "SELECT subtotal, discount, tax, total FROM orders WHERE id IN (" + pendingIds.map(() => "?").join(",") + ")",
-      pendingIds
-    );
-    const combinedSubtotal = (paidRows || []).reduce((s, o) => s + Number(o.subtotal), 0);
-    const combinedDiscount = (paidRows || []).reduce((s, o) => s + Number(o.discount), 0);
-    const combinedTax = (paidRows || []).reduce((s, o) => s + Number(o.tax), 0);
-    const combinedTotal = (paidRows || []).reduce((s, o) => s + Number(o.total), 0);
+    // Validate BEFORE any status/stock/session writes.
     const validationExpected = useAdjustedSplitMath ? combinedTotal : totalBaseTotal;
     if (isSplitPayment && Math.abs(round2(paidSum) - round2(validationExpected)) >= 0.01) {
       await conn.rollback();
-      return res.status(400).json({ error: "Split payment amounts must exactly match computed total" });
+      return res.status(400).json({
+        error: "Split payment amounts must exactly match computed total",
+        expectedTotal: round2(validationExpected),
+        paidSum: round2(paidSum),
+      });
     }
 
-    // Validate manually entered amount and compute change
     let changeAmount = 0;
     let receivedAmount = combinedTotal;
     if (manualAmountPayment) {
@@ -2791,9 +2892,39 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
       }
       if (receivedAmount + 0.009 < combinedTotal) {
         await conn.rollback();
-        return res.status(400).json({ error: "Payment amount is less than amount due" });
+        return res.status(400).json({
+          error: "Payment amount is less than amount due",
+          amountDue: combinedTotal,
+          amountReceived: receivedAmount,
+        });
       }
       changeAmount = round2(Math.max(0, receivedAmount - combinedTotal));
+    }
+
+    const { userId, employeeId, userName } = getActingUser(req);
+
+    // Persist payment only after validation succeeds
+    for (const ob of orderBases) {
+      await conn.execute(
+        "UPDATE orders SET status = 'paid', payment_method = ?, discount = ?, tax = ?, total = ? WHERE id = ?",
+        [paymentMethodVal, ob.discount, ob.tax, ob.total, ob.id]
+      );
+    }
+    try {
+      await consumeStockForPaidOrderIds(conn, pendingIds);
+    } catch (stockErr) {
+      if (stockErr.code !== "ER_NO_SUCH_TABLE") throw stockErr;
+    }
+    try {
+      await vacateTableIfIdle(conn, branchId, tableId, {
+        closedBy: userName || employeeId || "pay-all",
+      });
+    } catch (sessErr) {
+      if (sessErr.code !== "ER_NO_SUCH_TABLE") throw sessErr;
+      await conn.execute(
+        "UPDATE pos_tables SET status = 'available', current_order_id = NULL WHERE branch_id = ? AND id = ?",
+        [branchId, tableId]
+      );
     }
 
     // Handle split payment records
@@ -2965,6 +3096,11 @@ app.post("/api/tables/:tableId/pay-all", requireAnyPermission("accept_payments",
     }
     if (err.code === "ER_NO_SUCH_TABLE" && err.message?.includes("charge_transactions")) {
       return res.status(503).json({ error: "Charge feature not available. Run server/schema.sql in MySQL" });
+    }
+    if (err.code === "ER_DATA_TOO_LONG" && /order_ids/i.test(String(err.message || ""))) {
+      return res.status(500).json({
+        error: "Too many orders on this table for Charge/Utang. Restart the server to apply the order_ids migration, or settle without Charge.",
+      });
     }
     console.error("Pay table error:", err);
     res.status(500).json({ error: "Failed to process payment" });
@@ -6245,6 +6381,8 @@ app.put("/api/settings", requireAnyPermission("manage_settings"), async (req, re
         PRIMARY KEY (branch_id, seq_date)
       )`,
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_number VARCHAR(32) DEFAULT NULL",
+      // Long KTV sessions can accumulate many pending order IDs; VARCHAR(255) overflow broke Charge/Utang bill-out.
+      "ALTER TABLE charge_transactions MODIFY COLUMN order_ids TEXT",
       `CREATE TABLE IF NOT EXISTS receipt_snapshots (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         branch_id INT UNSIGNED NOT NULL DEFAULT 1,

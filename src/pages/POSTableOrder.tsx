@@ -125,6 +125,8 @@ export default function POSTableOrder() {
   const [selectedLady, setSelectedLady] = useState<string>("");
   const [selectedLdLadyForCategory, setSelectedLdLadyForCategory] = useState<string>("");
   const [amountTendered, setAmountTendered] = useState<string>("");
+  // Server-authoritative bill total (mirrors pay-all math) — prevents "amount less than due" drift.
+  const [serverBill, setServerBill] = useState<{ total: number; baseTotal: number } | null>(null);
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
   const [managerAuthModalOpen, setManagerAuthModalOpen] = useState(false);
   const [pendingDiscount, setPendingDiscount] = useState<{ id: string; name: string; type: string; value: string } | null>(null);
@@ -192,6 +194,66 @@ export default function POSTableOrder() {
     }
     hadUnsentItemsRef.current = hasUnsentItems;
   }, [tableId, orderTabs]);
+
+  // Fetch the server-authoritative bill total whenever the payment UI is open or its inputs change.
+  // Self-contained (computes its own inputs) so it stays above the loading/error early returns.
+  useEffect(() => {
+    if (!tableId) {
+      setServerBill(null);
+      return;
+    }
+    if (!paymentMethodModalOpen && !paymentModalOpen) return;
+    const sentItems = orderTabs
+      .filter((t) => t.sent)
+      .flatMap((t) => t.items)
+      .filter((i) => !i.isVoided);
+    if (sentItems.length === 0) {
+      setServerBill(null);
+      return;
+    }
+    const chargeable = sentItems.reduce(
+      (s, i) => s + (i.isComplimentary ? 0 : i.subtotal),
+      0
+    );
+    const discount = appliedDiscount
+      ? appliedDiscount.value.includes("%")
+        ? chargeable * (parseFloat(appliedDiscount.value) / 100)
+        : parseFloat(appliedDiscount.value) || 0
+      : 0;
+    const splitsPayload = useSplitPayment
+      ? splitPayments
+          .filter((sp) => Number(sp.amount) > 0)
+          .map((sp) => ({ amount: Number(sp.amount) || 0, paymentMethod: normalizePaymentMethod(sp.method) }))
+      : undefined;
+    let cancelled = false;
+    api.tables
+      .billPreview(tableId, {
+        paymentMethod: useSplitPayment ? undefined : selectedPaymentMethod,
+        discountAmount: discount > 0 ? discount : undefined,
+        splits: splitsPayload && splitsPayload.length >= 2 ? splitsPayload : undefined,
+      })
+      .then((res) => {
+        if (cancelled) return;
+        // Empty/settled table (or post-payment race) → fall back to local math, don't show ₱0.
+        setServerBill(res.total > 0 ? { total: res.total, baseTotal: res.baseTotal } : null);
+      })
+      .catch(() => {
+        // Fall back to local math if preview is unavailable.
+        if (!cancelled) setServerBill(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tableId,
+    orderTabs,
+    appliedDiscount,
+    paymentMethodModalOpen,
+    paymentModalOpen,
+    selectedPaymentMethod,
+    useSplitPayment,
+    splitPayments,
+  ]);
 
   const [voidModalOpen, setVoidModalOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
@@ -1220,10 +1282,12 @@ export default function POSTableOrder() {
   const discountedTax = discountedSubtotal * taxRateDecimal;
   const discountedServiceCharge = computeServiceCharge(discountedSubtotal);
   const discountedTotal = discountedSubtotal + discountedTax + discountedServiceCharge;
-  // Card surcharge: for non-split use selected method; for split support both input styles:
-  // (a) card split entered as base amount, or (b) entered as collected amount incl. surcharge.
+  // Card surcharge: must match server pay-all (rate × pre-surcharge total = chargeable + tax + service).
+  // Split supports both input styles: (a) card entered as base, or (b) collected amount incl. surcharge.
   const hasCardSurcharge = !useSplitPayment && isCardPaymentMethod(selectedPaymentMethod);
-  const cardSurcharge = hasCardSurcharge ? discountedSubtotal * cardSurchargeDecimal : 0;
+  const cardSurcharge = hasCardSurcharge
+    ? Math.round((discountedTotal * cardSurchargeDecimal + Number.EPSILON) * 100) / 100
+    : 0;
   const splitCardSurchargeRaw = useSplitPayment
     ? splitPayments.reduce((sum, sp) => {
         if (isCardPaymentMethod(sp.method)) {
@@ -1258,7 +1322,11 @@ export default function POSTableOrder() {
   const splitCardSurcharge = useSplitPayment
     ? (useAdjustedSplitMath ? splitCardSurchargeAdjusted : splitCardSurchargeRaw)
     : 0;
-  const finalTotal = discountedTotal + (useSplitPayment ? splitCardSurcharge : cardSurcharge);
+  const localFinalTotal = Math.round(
+    ((discountedTotal + (useSplitPayment ? splitCardSurcharge : cardSurcharge)) + Number.EPSILON) * 100
+  ) / 100;
+  // Prefer the server total (identical math to pay-all) for the non-split manual/exact-amount path.
+  const finalTotal = !useSplitPayment && serverBill != null ? serverBill.total : localFinalTotal;
   const showAmountEntry = !useSplitPayment && MANUAL_AMOUNT_METHODS.includes(selectedPaymentMethod);
   const amountEntryLabel =
     selectedPaymentMethod === "cash"
@@ -1276,9 +1344,10 @@ export default function POSTableOrder() {
       ? amountReceivedNum - finalTotal
       : 0;
   // For split: validate against discounted base total using whichever interpretation is closer:
-  // raw (base input) vs adjusted (card input includes surcharge).
+  // raw (base input) vs adjusted (card input includes surcharge). Prefer server base total when available.
   const splitBaseTotal = useAdjustedSplitMath ? splitBaseTotalAdjusted : splitBaseTotalRaw;
-  const splitRemaining = discountedTotal - splitBaseTotal;
+  const splitTargetTotal = useSplitPayment && serverBill != null ? serverBill.baseTotal : discountedTotal;
+  const splitRemaining = splitTargetTotal - splitBaseTotal;
   // When only one split is "charge", allow using main chargeCustomerName if split name empty
   const chargeSplitsCount = splitPayments.filter((sp) => sp.method === "charge").length;
   const splitValid =
